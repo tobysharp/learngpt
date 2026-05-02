@@ -1,0 +1,6 @@
+{
+  "cmake.sourceDirectory": "/home/toby/dev/learngpt/infergpt/src",
+  "cmake.debugConfig": {
+    "cwd": "${workspaceFolder}"
+  }
+}
