@@ -2,17 +2,13 @@
 
 #include <cmath>
 #include <limits>
+#include <numbers>
 #include <string>
 
 #include "algebra.h"
 #include "matrix.h"
 
-template <typename T>
-Matrix<T> Gelu(const Matrix<T>& x) {
-  // TODO
-  return x;
-}
-
+// A simple affine transformation layer with weights and bias, computing Y = X * W + B.
 template <typename T>
 struct Affine {
   Matrix<T> weights;
@@ -27,6 +23,7 @@ struct Affine {
   }
 };
 
+// Layer normalization layer, normalizing each row to have zero mean and unit variance, then applying a learned scale and bias.
 template <typename T>
 struct LayerNorm {
   Vector<T> g, b;
@@ -40,6 +37,7 @@ struct LayerNorm {
   }
 };
 
+// Multi-head self-attention layer, computing attention in parallel across multiple heads, then projecting the concatenated output.
 template <typename T>
 struct MultiHeadAttention {
   explicit MultiHeadAttention(int embedding_size, int heads) : c_attn_(embedding_size, 3 * embedding_size), c_proj_(embedding_size, embedding_size), heads_(heads) {}
@@ -64,6 +62,7 @@ struct MultiHeadAttention {
   }
 
  private:
+  // Applies the softmax function to the first `count` elements of `x` in place.
   static void SoftmaxInPlace(Vector<T>& x, int count) {
     T x_max = std::numeric_limits<T>::lowest();
     for (int i = 0; i < count; ++i)
@@ -78,6 +77,7 @@ struct MultiHeadAttention {
       x[i] *= scale;
   }
 
+  // Computes the causal attention of q, k, v, where each row i of the output is the attention of q.row(i) with k.rows(0..i) and v.rows(0..i).
   template <IsMatrix M>
   static Matrix<T> CausalAttention(const M& q, const M& k, const M& v) {
     static_assert(std::is_same_v<T, typename std::remove_cvref_t<M>::Scalar>);  
@@ -89,10 +89,9 @@ struct MultiHeadAttention {
       for (int j = 0; j <= i; ++j)
         row[j] = RowDotRow(q, i, k, j) * scale;
       SoftmaxInPlace(row, i + 1);
-      for (int j = 0; j < v.Columns(); ++j) {
-        // Dot of first (i+1) elements of `row` with v.column(j).
+      // Dot of first (i+1) elements of `row` with v.column(j).
+      for (int j = 0; j < v.Columns(); ++j)
         out(i, j) = RowDotColumn(row, 0, v, j, i + 1); 
-      }
     }
     return out;
   }
@@ -101,6 +100,7 @@ struct MultiHeadAttention {
   const int heads_;
 };
 
+// A feedforward MLP layer, applying a non-linear activation between two affine transformations.
 template <typename T>
 struct MultiLayerPerceptron {
   Affine<T> c_fc, c_proj;
@@ -109,11 +109,20 @@ struct MultiLayerPerceptron {
     c_fc.Load(stem + "_c_fc");
     c_proj.Load(stem + "_c_proj");
   }
-  Matrix<T> operator()(const Matrix<T>& x) const {
+  Matrix<T> operator()(Matrix<T> x) const {
     return c_proj(Gelu(c_fc(x)));
+  }
+ private:
+  // The GELU activation function, approximating x * sigmoid(1.702 * x).
+  Matrix<T> Gelu(Matrix<T> m) {
+    constexpr T sqrt_two_over_pi = std::sqrt(T{2} / std::numbers::pi_v<T>);
+    return Transform(std::move(m), [sqrt_two_over_pi](T x) {
+      return T{0.5} * x * (T{1} + std::tanh(sqrt_two_over_pi * (x + static_cast<T>(0.044715) * x * x * x)));
+    });
   }
 };
 
+// A transformer layer, consisting of a multi-head self-attention layer followed by a feedforward MLP layer, with layer normalization and residual connections.
 template <typename T>
 struct Transformer {
   MultiHeadAttention<T> attention;

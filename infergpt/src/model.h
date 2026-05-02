@@ -49,7 +49,7 @@ class Model {
     Matrix<T> x = Embed(inputs);
     for (const auto& transformer : transformers_)
       x = transformer(x);
-    return ln_f(x) * wte_.Transpose();
+    return ln_f(x) * Transpose(wte_);
   }
 
  private:

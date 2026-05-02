@@ -1,11 +1,14 @@
 #pragma once
 
+#include <cassert>
 #include <concepts>
 #include <exception>
 #include <fstream>
 #include <functional>
 #include <span>
 #include <tuple>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 template <typename M>
@@ -90,6 +93,32 @@ auto Transpose(const M& m) {
     for (int j = 0; j < m.Columns(); ++j)
       result(j, i) = src[j];
   }
+  return result;
+}
+
+template <IsMatrix Src, IsMatrix Dst, typename F>
+void TransformImpl(const Src& src, Dst* dst, F&& fn) {
+  assert(src.Rows() == dst->Rows());
+  assert(src.Columns() == dst->Columns());
+  for (int i = 0; i < src.Rows(); ++i) {
+    const auto* s = src[i];
+    auto* d = (*dst)[i];
+    for (int j = 0; j < src.Columns(); ++j)
+      d[j] = std::invoke(fn, s[j]);
+  }
+}
+
+template <typename T, typename F>
+Matrix<T> Transform(Matrix<T> m, F&& fn) {
+  TransformImpl(m, &m, std::forward<F>(fn));
+  return m;
+}
+
+template <IsMatrix M, typename F>
+auto Transform(const M& m, F&& fn) {
+  using T = typename std::remove_cvref_t<M>::Scalar;
+  Matrix<T> result{m.Rows(), m.Columns()};
+  TransformImpl(m, &result, std::forward<F>(fn));
   return result;
 }
 
