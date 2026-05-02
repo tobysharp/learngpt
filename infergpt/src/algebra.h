@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cassert>
+#include <tuple>
 #include <utility>
 
 #include "matrix.h"
@@ -28,4 +29,25 @@ auto RowDotColumn(const L& lhs, int lrow, const R& rhs, int rcol, int count = -1
   for (int i = 0; i < count; ++i)
     sum += pl[i] * rhs(i, rcol);
   return sum;
+}
+
+template <IsMatrix M>
+auto RowMeanAndVariance(const M& m, int row) {
+  using T = typename std::remove_cvref_t<M>::Scalar;
+  const T scale = T{1} / m.Columns();
+  const T* src = m[row];
+
+  T sum = T{0};
+  for (int i = 0; i < m.Columns(); ++i)
+    sum += src[i];
+  const T mean = sum * scale;
+
+  T sumsqr = T{0};
+  for (int i = 0; i < m.Columns(); ++i) {
+    T diff = src[i] - mean;
+    sumsqr += diff * diff;
+  }
+  const T var = sumsqr * scale;
+
+  return std::make_pair(mean, var);
 }
