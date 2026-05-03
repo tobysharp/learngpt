@@ -49,7 +49,11 @@ class Model {
     Matrix<T> x = Embed(inputs);
     for (const auto& transformer : transformers_)
       x = transformer(std::move(x));
-    return MatMul_XYT(ln_f(x), wte_);
+    // Last row of ln_f(x) * wte_ ^ T is
+    // Row(ln_f(x), -1) * Transpose(wte_)
+    // = 
+    auto last_row_x = Row(x, x.Rows() - 1);
+    return MatMul_XYT(ln_f(last_row_x), wte_);
   }
 
  private:

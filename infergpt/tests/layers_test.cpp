@@ -21,7 +21,7 @@ void FillRowVector(RowVector<T>* vector, std::initializer_list<T> values) {
   assert(vector->Size() == static_cast<int>(values.size()));
   int index = 0;
   for (const T value : values)
-    (*vector)[index++] = value;
+    (*vector)(index++) = value;
 }
 
 template <typename T>
@@ -29,7 +29,7 @@ void WriteMatrixFile(const std::filesystem::path& path, const Matrix<T>& matrix)
   std::ofstream out(path, std::ios::binary);
   assert(out.good());
   for (int i = 0; i < matrix.Rows(); ++i)
-    out.write(reinterpret_cast<const char*>(matrix[i]), sizeof(T) * matrix.Columns());
+    out.write(reinterpret_cast<const char*>(matrix.RowData(i)), sizeof(T) * matrix.Columns());
   assert(out.good());
 }
 
@@ -37,7 +37,7 @@ template <typename T>
 void WriteRowVectorFile(const std::filesystem::path& path, const RowVector<T>& vector) {
   std::ofstream out(path, std::ios::binary);
   assert(out.good());
-  out.write(reinterpret_cast<const char*>(&vector[0]), sizeof(T) * vector.Size());
+  out.write(reinterpret_cast<const char*>(&vector(0)), sizeof(T) * vector.Size());
   assert(out.good());
 }
 
@@ -73,7 +73,7 @@ Matrix<float> ManualLayerNorm(Matrix<float> x, const RowVector<float>& g, const 
     const float scale = 1.0f / std::sqrt(variance + eps);
 
     for (int j = 0; j < x.Columns(); ++j)
-      x(i, j) = (x(i, j) - mean) * scale * g[j] + b[j];
+      x(i, j) = (x(i, j) - mean) * scale * g(j) + b(j);
   }
   return x;
 }
@@ -85,7 +85,7 @@ Matrix<float> ManualAffine(const Matrix<float>& x, const Matrix<float>& weights,
       float sum = 0.0f;
       for (int k = 0; k < x.Columns(); ++k)
         sum += x(i, k) * weights(k, j);
-      out(i, j) = sum + bias[j];
+      out(i, j) = sum + bias(j);
     }
   }
   return out;
@@ -114,7 +114,7 @@ Matrix<float> ManualSingleHeadCausalAttention(const Matrix<float>& x) {
   const float scale = 1.0f / std::sqrt(static_cast<float>(x.Columns()));
   for (int i = 0; i < x.Rows(); ++i) {
     std::vector<float> scores(i + 1);
-    float max_score = -std::numeric_limits<float>::infinity();
+    float max_score = std::numeric_limits<float>::lowest();
     for (int j = 0; j <= i; ++j) {
       float dot = 0.0f;
       for (int k = 0; k < x.Columns(); ++k)

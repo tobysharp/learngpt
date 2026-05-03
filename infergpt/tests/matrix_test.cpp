@@ -10,15 +10,17 @@ using ConstMatrix = const MutableMatrix;
 
 static_assert(IsMatrix<MutableMatrix>);
 static_assert(IsVector<RowVector<int>>);
-static_assert(std::is_same_v<decltype(std::declval<RowView<MutableMatrix>>()[0]), int&>);
-static_assert(std::is_same_v<decltype(std::declval<RowView<ConstMatrix>>()[0]), const int&>);
-static_assert(std::is_same_v<decltype(std::declval<ColumnView<MutableMatrix>>()[0]), int&>);
-static_assert(std::is_same_v<decltype(std::declval<ColumnView<ConstMatrix>>()[0]), const int&>);
+static_assert(IsMatrix<RowView<MutableMatrix>>);
+static_assert(IsMatrix<ColumnView<MutableMatrix>>);
+static_assert(std::is_same_v<decltype(std::declval<RowView<MutableMatrix>>()(0)), int&>);
+static_assert(std::is_same_v<decltype(std::declval<RowView<ConstMatrix>>()(0)), const int&>);
+static_assert(std::is_same_v<decltype(std::declval<ColumnView<MutableMatrix>>()(0)), int&>);
+static_assert(std::is_same_v<decltype(std::declval<ColumnView<ConstMatrix>>()(0)), const int&>);
 static_assert(!std::is_assignable_v<SubMatrixView<const MutableMatrix>&, const MutableMatrix&>);
-static_assert(!std::is_assignable_v<decltype(std::declval<const MutableMatrix&>()[0][0]), int>);
-static_assert(!std::is_assignable_v<decltype(std::declval<RowView<ConstMatrix>>()[0]), int>);
-static_assert(!std::is_assignable_v<decltype(std::declval<ColumnView<ConstMatrix>>()[0]), int>);
-static_assert(!std::is_assignable_v<decltype(std::declval<decltype(Block(std::declval<const MutableMatrix&>(), 0, 0, 1, 1))>()[0][0]), int>);
+static_assert(!std::is_assignable_v<decltype(std::declval<const MutableMatrix&>()(0, 0)), int>);
+static_assert(!std::is_assignable_v<decltype(std::declval<RowView<ConstMatrix>>()(0)), int>);
+static_assert(!std::is_assignable_v<decltype(std::declval<ColumnView<ConstMatrix>>()(0)), int>);
+static_assert(!std::is_assignable_v<decltype(std::declval<decltype(Block(std::declval<const MutableMatrix&>(), 0, 0, 1, 1))>()(0, 0)), int>);
 static_assert(!std::is_assignable_v<decltype(std::declval<decltype(BroadcastToRows(std::declval<const RowVector<int>&>(), 1))>()(0, 0)), int>);
 
 void FillSequential(MutableMatrix* matrix) {
@@ -34,22 +36,24 @@ void TestRowAndColumnViewsPreserveConstnessAndMutability() {
   FillSequential(&matrix);
 
   auto row = Row(matrix, 1);
-  static_assert(std::is_same_v<decltype(row[0]), int&>);
-  row[2] = 99;
+  static_assert(std::is_same_v<decltype(row(0)), int&>);
+  row(2) = 99;
   assert(matrix(1, 2) == 99);
+  assert(row.RowData(0)[2] == 99);
 
   auto column = Column(matrix, 3);
-  static_assert(std::is_same_v<decltype(column[0]), int&>);
-  column[2] = -7;
+  static_assert(std::is_same_v<decltype(column(0)), int&>);
+  column(2) = -7;
   assert(matrix(2, 3) == -7);
+  assert(*column.RowData(2) == -7);
 
   const MutableMatrix& const_matrix = matrix;
   auto const_row = Row(const_matrix, 0);
   auto const_column = Column(const_matrix, 1);
-  static_assert(std::is_same_v<decltype(const_row[0]), const int&>);
-  static_assert(std::is_same_v<decltype(const_column[0]), const int&>);
-  assert(const_row[3] == matrix(0, 3));
-  assert(const_column[2] == matrix(2, 1));
+  static_assert(std::is_same_v<decltype(const_row(0)), const int&>);
+  static_assert(std::is_same_v<decltype(const_column(0)), const int&>);
+  assert(const_row(3) == matrix(0, 3));
+  assert(const_column(2) == matrix(2, 1));
 }
 
 void TestBlockViewMutationAndNestedBlocks() {
@@ -88,23 +92,23 @@ void TestTransposeAndRowVectorStorage() {
 
   RowVector<int> vector{4};
   for (int i = 0; i < vector.Size(); ++i)
-    vector[i] = i + 10;
+    vector(i) = i + 10;
   assert(vector.Rows() == 1);
   assert(vector.Columns() == 4);
-  assert(vector[3] == 13);
+  assert(vector(3) == 13);
 }
 
 void TestRowBroadcastView() {
   RowVector<int> bias{3};
-  bias[0] = 5;
-  bias[1] = 6;
-  bias[2] = 7;
+  bias(0) = 5;
+  bias(1) = 6;
+  bias(2) = 7;
 
   const auto broadcast = BroadcastToRows(bias, 4);
   assert(broadcast.Rows() == 4);
   assert(broadcast.Columns() == 3);
   for (int row = 0; row < broadcast.Rows(); ++row) {
-    assert(broadcast[row][0] == 5);
+    assert(broadcast.RowData(row)[0] == 5);
     assert(broadcast(row, 1) == 6);
     assert(broadcast(row, 2) == 7);
   }

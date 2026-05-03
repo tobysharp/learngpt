@@ -2,3 +2,5 @@ build/*
 infergpt/build/*
 models/*
 .venv/*
+perf.data*
+*.txt

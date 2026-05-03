@@ -12,8 +12,8 @@ void TransformImpl(const Src& src, Dst* dst, F&& fn) {
   assert(src.Columns() == dst->Columns());
 
   for (int i = 0; i < src.Rows(); ++i) {
-    const auto* s = src[i];
-    auto* d = (*dst)[i];
+    const auto* s = src.RowData(i);
+    auto* d = dst->RowData(i);
     for (int j = 0; j < src.Columns(); ++j)
       d[j] = std::invoke(fn, s[j]);
   }
@@ -41,7 +41,7 @@ auto Dot(const L& lhs, const R& rhs, int count = -1) {
 
   T sum = T{0};
   for (int i = 0; i < count; ++i)
-    sum += lhs[i] * rhs[i];
+    sum += lhs(i) * rhs(i);
   return sum;
 }
 
@@ -52,12 +52,12 @@ auto MeanAndVariance(const V& v) {
 
   T sum = T{0};
   for (int i = 0; i < v.Size(); ++i)
-    sum += v[i];
+    sum += v(i);
   const T mean = sum * scale;
 
   T sumsqr = T{0};
   for (int i = 0; i < v.Size(); ++i) {
-    T diff = v[i] - mean;
+    T diff = v(i) - mean;
     sumsqr += diff * diff;
   }
   const T var = sumsqr * scale;
@@ -75,11 +75,11 @@ auto MatMul_XYT(const X& lhs, const Y& rhs) {
   const int rrows = rhs.Rows();
   Matrix<T> out(lrows, rrows);
   for (int i = 0; i < lrows; ++i) {
-    const T* pl = lhs[i];
-    T* pout = out[i];
+    const T* pl = lhs.RowData(i);
+    T* pout = out.RowData(i);
     for (int j = 0; j < rrows; ++j) {
       T sum = T{0};
-      const T* pr = rhs[j];
+      const T* pr = rhs.RowData(j);
       for (int k = 0; k < lcols; ++k)
         sum += pl[k] * pr[k];
       pout[j] = sum;
@@ -94,8 +94,8 @@ L& operator+=(L& lhs, const R& rhs) {
   assert(lhs.Rows() == rhs.Rows());
   assert(lhs.Columns() == rhs.Columns());
   for (int i = 0; i < lhs.Rows(); ++i) {
-    T* pl = lhs[i];
-    const T* pr = rhs[i];
+    T* pl = lhs.RowData(i);
+    const T* pr = rhs.RowData(i);
     for (int j = 0; j < lhs.Columns(); ++j)
       pl[j] += pr[j];
   }
@@ -109,9 +109,9 @@ auto operator+(const L& lhs, const R& rhs) {
   assert(lhs.Columns() == rhs.Columns());
   Matrix<T> out{lhs.Rows(), lhs.Columns()};
   for (int i = 0; i < lhs.Rows(); ++i) {
-    T* pd = out[i];
-    const T* pl = lhs[i];
-    const T* pr = rhs[i];
+    T* pd = out.RowData(i);
+    const T* pl = lhs.RowData(i);
+    const T* pr = rhs.RowData(i);
     for (int j = 0; j < lhs.Columns(); ++j)
       pd[j] = pl[j] + pr[j];
   }
@@ -122,12 +122,12 @@ template <IsVector V>
 int ArgMax(const V& v) {
   using T = typename V::Scalar;
   assert(v.Size() > 0);
-  T max = v[0];
+  T max = v(0);
   int pos = 0;
   for (int i = 1; i < v.Size(); ++i) {
-    if (v[i] > max) {
+    if (v(i) > max) {
       pos = i;
-      max = v[i];
+      max = v(i);
     }
   }
   return pos;

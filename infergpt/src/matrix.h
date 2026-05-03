@@ -17,7 +17,7 @@ concept IsMatrix = requires(M m, int i, int j) {
   typename std::remove_cvref_t<M>::Scalar;
   { m.Rows() } -> std::convertible_to<int>;
   { m.Columns() } -> std::convertible_to<int>;
-  { m[i] };
+  { m.RowData(i) };
   { m(i, j) };
 };
 
@@ -31,7 +31,8 @@ class SubMatrixView {
   
   int Rows() const { return row_index_.second - row_index_.first; }
   int Columns() const { return col_index_.second - col_index_.first; }
-  decltype(auto) operator[](int row) const { return &matrix_.get()(row_index_.first + row, col_index_.first); }
+  decltype(auto) RowData(int row) const { return &matrix_.get()(row_index_.first + row, col_index_.first); }
+  decltype(auto) operator[](int row) const { return RowData(row); }
   decltype(auto) operator()(int row, int col) const { return matrix_.get()(row_index_.first + row, col_index_.first + col); }
 
   M& Base() { return matrix_.get(); }
@@ -49,8 +50,8 @@ class SubMatrixView {
 
     for (int i = 0; i < Rows(); ++i)
     {
-      const auto* src = rhs[i];
-      auto* dst = (*this)[i];
+      const auto* src = rhs.RowData(i);
+      auto* dst = RowData(i);
       for (int j = 0; j < Columns(); ++j)
         dst[j] = src[j];
     }
@@ -87,14 +88,19 @@ class Matrix {
   Matrix(int rows, int cols, std::vector<T>&& data) : rows_(rows), cols_(cols), data_(std::move(data)), ptr_(data_.data()) {}
   Matrix(const Matrix& other) : rows_(other.rows_), cols_(other.cols_), data_(other.data_), ptr_(data_.data()) {}
   Matrix(Matrix&& other) noexcept : rows_(other.rows_), cols_(other.cols_), data_(std::move(other.data_)), ptr_(data_.data()) {}
+  template <IsMatrix R> Matrix(const R& other) : rows_(other.Rows()), cols_(other.Columns()), data_(rows_ * cols_), ptr_(data_.data()) {
+    for (int i = 0; i < rows_; ++i)
+      std::copy(other.RowData(i), other.RowData(i) + cols_, ptr_ + i * cols_);
+  }
 
-  Matrix& operator=(const Matrix& other) {
-    if (this == &other)
-      return *this;
-    rows_ = other.rows_;
-    cols_ = other.cols_;
-    data_ = other.data_;
+  template <IsMatrix R>
+  Matrix& operator=(const R& other) {
+    rows_ = other.Rows();
+    cols_ = other.Columns();
+    data_.resize(rows_ * cols_);
     ptr_ = data_.data();
+    for (int i = 0; i < rows_; ++i)
+      std::copy(other.RowData(i), other.RowData(i) + cols_, RowData(i));
     return *this;
   }
 
@@ -138,7 +144,7 @@ auto Transpose(const M& m) {
   using R = typename std::remove_cvref_t<M>;
   Matrix<typename R::Scalar> result{m.Columns(), m.Rows()};
   for (int i = 0; i < m.Rows(); ++i) {
-    const auto* src = m[i];
+    const auto* src = m.RowData(i);
     for (int j = 0; j < m.Columns(); ++j)
       result(j, i) = src[j];
   }
@@ -149,7 +155,7 @@ template <typename V>
 concept IsVector = requires(V v, int i) {
   typename std::remove_cvref_t<V>::Scalar;
   { v.Size() } -> std::convertible_to<int>;
-  { v[i] };
+  { v(i) };
 };
 
 // A row vector.
@@ -163,8 +169,11 @@ class RowVector : public Matrix<T> {
 
   int Size() const { return this->Columns(); }
 
-  T& operator[](int index) { return this->data_[index]; }
-  const T& operator[](int index) const { return this->data_[index]; }
+  T& operator()(int index) { return this->ptr_[index]; }
+  const T& operator()(int index) const { return this->ptr_[index]; }
+
+  T& operator()(int, int col) { return this->ptr_[col]; }
+  const T& operator()(int, int col) const { return this->ptr_[col]; }
 
   operator std::span<T>() { return this->data_; }
   operator std::span<const T>() const { return this->data_; }
@@ -175,16 +184,18 @@ class RowView {
  public:
   using Scalar = typename std::remove_cvref_t<M>::Scalar;
   using Reference = decltype(std::declval<M&>()(0, 0));
-  using Pointer = decltype(std::declval<M&>()[0]);
+  using Pointer = decltype(std::declval<M&>().RowData(0));
 
   RowView(M& matrix, int row) :
-     matrix_(matrix), data_(matrix[row]) {}
+     matrix_(matrix), data_(matrix.RowData(row)) {}
   
   int Rows() const { return 1; }
   int Columns() const { return matrix_.get().Columns(); }
   int Size() const { return Columns(); }
 
-  Reference operator[](int col) const { return data_[col]; }
+  Pointer RowData(int) const { return data_; }
+  Reference operator()(int col) const { return data_[col]; }
+  Reference operator()(int, int col) const { return data_[col]; }
 
  private:
   std::reference_wrapper<M> matrix_; 
@@ -202,7 +213,7 @@ class ColumnView {
  public:
   using Scalar = typename  std::remove_cvref_t<M>::Scalar;
   using Reference = decltype(std::declval<M&>()(0, 0));
-  using Pointer = decltype(std::declval<M&>()[0]);
+  using Pointer = decltype(std::declval<M&>().RowData(0));
 
   ColumnView(M& matrix, int col) :
      matrix_(matrix), column_(col) {}
@@ -210,8 +221,9 @@ class ColumnView {
   int Rows() const { return matrix_.get().Rows(); }
   int Columns() const { return 1; }
   int Size() const { return Rows(); }
-
-  Reference operator[](int row) const { return matrix_.get()(row, column_); }
+  Pointer RowData(int row) const { return matrix_.get().RowData(row) + column_; }
+  Reference operator()(int row) const { return matrix_.get()(row, column_); }
+  Reference operator()(int row, int) const { return matrix_.get()(row, column_); }
 
  private:
   std::reference_wrapper<M> matrix_; 
@@ -228,8 +240,8 @@ template <IsVector V>
 class RowBroadcastView {
  public:
   using Scalar = typename std::remove_cvref_t<V>::Scalar;
-  using Reference = decltype(std::declval<V&>()[0]);
-  using Pointer = decltype(&std::declval<V&>()[0]);
+  using Reference = decltype(std::declval<V&>()(0));
+  using Pointer = decltype(&std::declval<V&>()(0));
 
   RowBroadcastView(V& vector, int rows) :
      vector_(vector), rows_(rows) {}
@@ -237,8 +249,9 @@ class RowBroadcastView {
   int Rows() const { return rows_; }
   int Columns() const { return vector_.get().Size(); }
   
-  Pointer operator[](int row) const { return &vector_.get()[0]; }
-  Reference operator()(int row, int col) const { return vector_.get()[col]; }
+  Pointer RowData(int) const { return &vector_.get()(0); }
+  Pointer operator[](int row) const { return RowData(row); }
+  Reference operator()(int, int col) const { return vector_.get()(col); }
 
  private:
   std::reference_wrapper<V> vector_; 

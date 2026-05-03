@@ -29,9 +29,9 @@ void TestDotAcrossVectorViews() {
   assert(Dot(row1, col2, 2) == 42.0f);
 
   RowVector<float> weights{3};
-  weights[0] = 0.5f;
-  weights[1] = 1.5f;
-  weights[2] = -1.0f;
+  weights(0) = 0.5f;
+  weights(1) = 1.5f;
+  weights(2) = -1.0f;
   assert(Dot(row0, weights) == 0.5f * 1.0f + 1.5f * 2.0f - 3.0f);
 }
 
@@ -104,8 +104,8 @@ void TestBroadcastAddition() {
   matrix(1, 0) = 3.0f; matrix(1, 1) = 4.0f;
 
   RowVector<float> bias{2};
-  bias[0] = 1.0f;
-  bias[1] = 2.0f;
+  bias(0) = 1.0f;
+  bias(1) = 2.0f;
 
   const auto sum = matrix + BroadcastToRows(bias, 2);
   assert(sum(0, 0) == 2.0f);

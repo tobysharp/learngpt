@@ -35,15 +35,25 @@ struct LayerNorm {
     b.Load(stem + "_b.bin");
   }
   Matrix<T> operator()(Matrix<T> x) const {
+    LayerNormInPlace(x);
+    return x;
+  }
+  template <IsMatrix X>
+  Matrix<T> operator()(const X& x) const {
+    Matrix<T> copy = x;
+    LayerNormInPlace(copy);
+    return copy;
+  }
+ private:
+  void LayerNormInPlace(Matrix<T>& x) const {
     constexpr T eps = T{1e-5};
     for (int i = 0; i < x.Rows(); ++i) {
       auto row = Row(x, i);
       auto [mean, variance] = MeanAndVariance(row);
       const auto scale = T{1} / std::sqrt(variance + eps);
       for (int j = 0; j < row.Size(); ++j)
-        row[j] = (row[j] - mean) * scale * g[j] + b[j];
+        row(j) = (row(j) - mean) * scale * g(j) + b(j);
     }
-    return x;
   }
 };
 
@@ -76,15 +86,15 @@ struct MultiHeadAttention {
   static void SoftmaxInPlace(RowVector<T>& x, int count) {
     T x_max = std::numeric_limits<T>::lowest();
     for (int i = 0; i < count; ++i)
-      x_max = std::max(x_max, x[i]);
+      x_max = std::max(x_max, x(i));
     T sum = T{0};
     for (int i = 0; i < count; ++i) {
-      x[i] = std::exp(x[i] - x_max);
-      sum += x[i];
+      x(i) = std::exp(x(i) - x_max);
+      sum += x(i);
     }
     const T scale = T{1} / sum;
     for (int i = 0; i < count; ++i)
-      x[i] *= scale;
+      x(i) *= scale;
   }
 
   // Computes the causal attention of q, k, v, where each row i of the output is the attention of q.row(i) with k.rows(0..i) and v.rows(0..i).
@@ -93,16 +103,18 @@ struct MultiHeadAttention {
     using R = typename std::remove_cvref_t<M>;
     static_assert(std::is_same_v<T, typename R::Scalar>);  
 
-    Matrix<T> out{q.Rows(), v.Columns()};
+    Matrix<T> v_T = Transpose(v);
+    Matrix<T> out{q.Rows(), v_T.Rows()};
     RowVector<T> row{k.Rows()};
     const T scale = T{1} / std::sqrt(static_cast<T>(q.Columns()));
     for (int i = 0; i < q.Rows(); ++i) {
       for (int j = 0; j <= i; ++j)
-        row[j] = Dot(Row(q, i), Row(k, j)) * scale;
+        row(j) = Dot(Row(q, i), Row(k, j)) * scale;
       SoftmaxInPlace(row, i + 1);
       // Dot of first (i+1) elements of `row` with v.column(j).
-      for (int j = 0; j < v.Columns(); ++j)
-        out(i, j) = Dot(row, Column(v, j), i + 1); 
+      T* dst = out.RowData(i);
+      for (int j = 0; j < v_T.Rows(); ++j)
+        dst[j] = Dot(row, Row(v_T, j), i + 1); 
     }
     return out;
   }

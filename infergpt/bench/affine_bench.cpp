@@ -68,7 +68,7 @@ void Fill(Matrix<float>* matrix, uint32_t seed) {
 void Fill(RowVector<float>* vector, uint32_t seed) {
   uint32_t state = seed;
   for (int i = 0; i < vector->Size(); ++i)
-    (*vector)[i] = RandomFloat(&state);
+    (*vector)(i) = RandomFloat(&state);
 }
 
 std::vector<Scenario> BuildScenarios(const Options& options) {
