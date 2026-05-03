@@ -1,0 +1,4 @@
+add_executable(affine_bench affine_bench.cpp)
+target_compile_features(affine_bench PRIVATE cxx_std_23)
+target_compile_options(affine_bench PRIVATE -g -fno-omit-frame-pointer)
+target_include_directories(affine_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

@@ -33,38 +33,6 @@ auto Transform(const M& m, F&& fn) {
   return result;
 }
 
-template <IsMatrix Src1, IsMatrix Src2, IsMatrix Dst, typename F>
-void BinaryTransformImpl(const Src1& src1, const Src2& src2, Dst* dst, F&& fn) {
-  assert(src1.Rows() == dst->Rows());
-  assert(src1.Rows() == src2.Rows());
-  assert(src1.Columns() == dst->Columns());
-  assert(src1.Columns() == src2.Columns());
-
-  for (int i = 0; i < src1.Rows(); ++i) {
-    const auto* s1 = src1[i];
-    const auto* s2 = src2[i];
-    auto* d = (*dst)[i];
-    for (int j = 0; j < src1.Columns(); ++j)
-      d[j] = std::invoke(fn, s1[j], s2[j]);
-  }
-}
-
-template <typename T, IsMatrix R, typename F>
-Matrix<T> BinaryTransform(Matrix<T> m, const R& rhs, F&& fn) {
-  BinaryTransformImpl(m, rhs, &m, std::forward<F>(fn));
-  return m;
-}
-
-template <IsMatrix M1, IsMatrix M2, typename F>
-auto BinaryTransform(const M1& lhs, const M2& rhs, F&& fn) {
-  assert(lhs.Rows() == rhs.Rows());
-  assert(lhs.Columns() == rhs.Columns());
-  using T = std::remove_cvref_t<decltype(std::invoke(std::forward<F>(fn), lhs(0, 0), rhs(0, 0)))>;
-  Matrix<T> result{lhs.Rows(), lhs.Columns()};
-  BinaryTransformImpl(lhs, rhs, &result, std::forward<F>(fn));
-  return result;
-}
-
 template <IsVector L, IsVector R>
 auto Dot(const L& lhs, const R& rhs, int count = -1) {
   assert(lhs.Size() == rhs.Size());
@@ -97,19 +65,24 @@ auto MeanAndVariance(const V& v) {
   return std::make_pair(mean, var);
 }
 
-template <IsMatrix L, IsMatrix R>
-auto operator*(const L& lhs, const R& rhs) {
-  using T = decltype(std::declval<typename L::Scalar>() * std::declval<typename R::Scalar>());
-  assert(lhs.Columns() == rhs.Rows());
+template <IsMatrix X, IsMatrix Y>
+auto MatMul_XYT(const X& lhs, const Y& rhs) {
+  using T = decltype(std::declval<typename X::Scalar>() * std::declval<typename Y::Scalar>());
+  assert(lhs.Columns() == rhs.Columns());
 
-  Matrix<T> out(lhs.Rows(), rhs.Columns());
-  for (int i = 0; i < lhs.Rows(); ++i) {
-    const T* row = lhs[i];
-    for (int j = 0; j < rhs.Columns(); ++j) {
+  const int lrows = lhs.Rows();
+  const int lcols = lhs.Columns();
+  const int rrows = rhs.Rows();
+  Matrix<T> out(lrows, rrows);
+  for (int i = 0; i < lrows; ++i) {
+    const T* pl = lhs[i];
+    T* pout = out[i];
+    for (int j = 0; j < rrows; ++j) {
       T sum = T{0};
-      for (int k = 0; k < lhs.Columns(); ++k)
-        sum += row[k] * rhs(k, j);
-      out(i, j) = sum;
+      const T* pr = rhs[j];
+      for (int k = 0; k < lcols; ++k)
+        sum += pl[k] * pr[k];
+      pout[j] = sum;
     }
   }
   return out;

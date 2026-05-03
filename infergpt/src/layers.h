@@ -11,15 +11,17 @@
 // A simple affine transformation layer with weights and bias, computing Y = X * W + B.
 template <typename T>
 struct Affine {
-  Matrix<T> weights;
+  Matrix<T> weights_T;
   RowVector<T> bias;
-  explicit Affine(int rows, int cols) : weights(rows, cols), bias(cols) {}
+  explicit Affine(int rows, int cols) : weights_T(cols, rows), bias(cols) {}
   void Load(const std::string& stem) {
+    Matrix<T> weights{weights_T.Columns(), weights_T.Rows()};
     weights.Load(stem + "_w.bin");
+    weights_T = Transpose(weights);
     bias.Load(stem + "_b.bin");
   }
   Matrix<T> operator()(const Matrix<T>& x) const {
-    return x * weights + BroadcastToRows(bias, x.Rows());
+    return MatMul_XYT(x, weights_T) + BroadcastToRows(bias, x.Rows());
   }
 };
 

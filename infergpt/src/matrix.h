@@ -83,14 +83,36 @@ class Matrix {
  public:
   using Scalar = T;
 
-  Matrix(int rows, int cols) : rows_(rows), cols_(cols), data_(rows * cols) {}
-  Matrix(int rows, int cols, std::vector<T>&& data) : rows_(rows), cols_(cols), data_(std::move(data)) {}
+  Matrix(int rows, int cols) : rows_(rows), cols_(cols), data_(rows * cols), ptr_(data_.data()) {}
+  Matrix(int rows, int cols, std::vector<T>&& data) : rows_(rows), cols_(cols), data_(std::move(data)), ptr_(data_.data()) {}
+  Matrix(const Matrix& other) : rows_(other.rows_), cols_(other.cols_), data_(other.data_), ptr_(data_.data()) {}
+  Matrix(Matrix&& other) noexcept : rows_(other.rows_), cols_(other.cols_), data_(std::move(other.data_)), ptr_(data_.data()) {}
+
+  Matrix& operator=(const Matrix& other) {
+    if (this == &other)
+      return *this;
+    rows_ = other.rows_;
+    cols_ = other.cols_;
+    data_ = other.data_;
+    ptr_ = data_.data();
+    return *this;
+  }
+
+  Matrix& operator=(Matrix&& other) noexcept {
+    if (this == &other)
+      return *this;
+    rows_ = other.rows_;
+    cols_ = other.cols_;
+    data_ = std::move(other.data_);
+    ptr_ = data_.data();
+    return *this;
+  }
 
   int Rows() const { return rows_; }
   int Columns() const { return cols_; }
   
-  T* RowData(int row = 0) { return data_.data() + row * cols_; }
-  const T* RowData(int row = 0) const { return data_.data() + row * cols_; }
+  T* RowData(int row = 0) { return ptr_ + row * cols_; }
+  const T* RowData(int row = 0) const { return ptr_ + row * cols_; }
 
   T* operator[](int row) { return RowData(row); }
   const T* operator[](int row) const { return RowData(row); }
@@ -108,6 +130,7 @@ class Matrix {
  protected:
   int rows_, cols_;
   std::vector<T> data_;
+  T* ptr_;
 };
 
 template <IsMatrix M>

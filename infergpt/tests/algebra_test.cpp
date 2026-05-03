@@ -54,11 +54,12 @@ void TestBinaryTransformAndRowStatistics() {
   Fill(&lhs);
   Fill(&rhs);
 
-  const auto sum = BinaryTransform(lhs, rhs, [](float left, float right) { return left + right; });
+  const auto sum = lhs + rhs;
   assert(sum(0, 0) == 2.0f);
   assert(sum(1, 2) == 12.0f);
 
-  const auto scaled = BinaryTransform(std::move(lhs), rhs, [](float left, float right) { return left - right * 0.5f; });
+  const auto scaled_rhs = Transform(rhs, [](float value) { return value * -0.5f; });
+  const auto scaled = lhs + scaled_rhs;
   assert(scaled(0, 1) == 1.0f);
   assert(scaled(1, 2) == 3.0f);
 
@@ -73,7 +74,7 @@ void TestMatrixArithmeticOperators() {
   Fill(&lhs);
   Fill(&rhs);
 
-  const auto product = lhs * rhs;
+  const auto product = MatMul_XYT(lhs, Transpose(rhs));
   assert(product.Rows() == 2);
   assert(product.Columns() == 2);
   assert(product(0, 0) == 22.0f);

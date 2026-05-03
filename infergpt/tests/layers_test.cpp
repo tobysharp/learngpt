@@ -91,12 +91,22 @@ Matrix<float> ManualAffine(const Matrix<float>& x, const Matrix<float>& weights,
   return out;
 }
 
+template <typename T>
+void SetAffineWeights(Affine<T>* affine, const Matrix<T>& weights) {
+  affine->weights_T = Transpose(weights);
+}
+
+template <typename T>
+Matrix<T> LogicalWeights(const Affine<T>& affine) {
+  return Transpose(affine.weights_T);
+}
+
 Matrix<float> ManualMlp(const Matrix<float>& x, const Affine<float>& c_fc, const Affine<float>& c_proj) {
-  auto hidden = ManualAffine(x, c_fc.weights, c_fc.bias);
+  auto hidden = ManualAffine(x, LogicalWeights(c_fc), c_fc.bias);
   for (int i = 0; i < hidden.Rows(); ++i)
     for (int j = 0; j < hidden.Columns(); ++j)
       hidden(i, j) = GeluScalar(hidden(i, j));
-  return ManualAffine(hidden, c_proj.weights, c_proj.bias);
+  return ManualAffine(hidden, LogicalWeights(c_proj), c_proj.bias);
 }
 
 Matrix<float> ManualSingleHeadCausalAttention(const Matrix<float>& x) {
@@ -138,12 +148,13 @@ std::filesystem::path TestTempDir() {
 
 void TestAffine() {
   Affine<float> affine(2, 3);
-  affine.weights = MakeMatrix<float>(2, 3, {1, 2, 3, 4, 5, 6});
+  const auto weights = MakeMatrix<float>(2, 3, {1, 2, 3, 4, 5, 6});
+  SetAffineWeights(&affine, weights);
   FillRowVector(&affine.bias, {0.5f, -0.5f, 1.0f});
 
   const auto input = MakeMatrix<float>(2, 2, {1, 2, 3, 4});
   const auto actual = affine(input);
-  const auto expected = ManualAffine(input, affine.weights, affine.bias);
+  const auto expected = ManualAffine(input, weights, affine.bias);
   for (int i = 0; i < actual.Rows(); ++i)
     for (int j = 0; j < actual.Columns(); ++j)
       ExpectNear(actual(i, j), expected(i, j), 1e-6f);
@@ -191,12 +202,12 @@ void TestMultiHeadAttention() {
 
 void TestMultiLayerPerceptron() {
   MultiLayerPerceptron<float> mlp(2);
-  mlp.c_fc.weights = MakeMatrix<float>(2, 8, {
+  SetAffineWeights(&mlp.c_fc, MakeMatrix<float>(2, 8, {
       1, 0, 0, 0, 0, 0, 0, 0,
       0, 1, 0, 0, 0, 0, 0, 0,
-  });
+  }));
   FillRowVector(&mlp.c_fc.bias, {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f});
-  mlp.c_proj.weights = MakeMatrix<float>(8, 2, {
+  SetAffineWeights(&mlp.c_proj, MakeMatrix<float>(8, 2, {
       1, 0,
       0, 1,
       0, 0,
@@ -205,7 +216,7 @@ void TestMultiLayerPerceptron() {
       0, 0,
       0, 0,
       0, 0,
-  });
+  }));
   FillRowVector(&mlp.c_proj.bias, {0.0f, 0.0f});
 
   const auto input = MakeMatrix<float>(2, 2, {-1, 2, 0.5f, -0.25f});
@@ -238,12 +249,12 @@ void TestTransformer() {
   FillRowVector(&transformer.ln_1.b, {0.0f, 0.0f});
   FillRowVector(&transformer.ln_2.g, {1.0f, 1.0f});
   FillRowVector(&transformer.ln_2.b, {0.0f, 0.0f});
-  transformer.mlp.c_fc.weights = MakeMatrix<float>(2, 8, {
+    SetAffineWeights(&transformer.mlp.c_fc, MakeMatrix<float>(2, 8, {
       1, 0, 0, 0, 0, 0, 0, 0,
       0, 1, 0, 0, 0, 0, 0, 0,
-  });
+    }));
   FillRowVector(&transformer.mlp.c_fc.bias, {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f});
-  transformer.mlp.c_proj.weights = MakeMatrix<float>(8, 2, {
+    SetAffineWeights(&transformer.mlp.c_proj, MakeMatrix<float>(8, 2, {
       1, 0,
       0, 1,
       0, 0,
@@ -252,7 +263,7 @@ void TestTransformer() {
       0, 0,
       0, 0,
       0, 0,
-  });
+  }));
   FillRowVector(&transformer.mlp.c_proj.bias, {0.0f, 0.0f});
 
   const auto input = MakeMatrix<float>(2, 2, {1, 2, 3, 4});
