@@ -19,7 +19,7 @@ struct Affine {
     bias.Load(stem + "_b.bin");
   }
   Matrix<T> operator()(const Matrix<T>& x) const {
-    return x * weights + bias;
+    return x * weights + BroadcastToRows(bias, x.Rows());
   }
 };
 
@@ -33,8 +33,15 @@ struct LayerNorm {
     b.Load(stem + "_b.bin");
   }
   Matrix<T> operator()(Matrix<T> x) const {
-    constexpr float eps = 1e-5f;
-    return x; // TODO
+    constexpr T eps = T{1e-5};
+    for (int i = 0; i < x.Rows(); ++i) {
+      auto row = Row(x, i);
+      auto [mean, variance] = MeanAndVariance(row);
+      const auto scale = T{1} / std::sqrt(variance + eps);
+      for (int j = 0; j < row.Size(); ++j)
+        row[j] = (row[j] - mean) * scale * g[j] + b[j];
+    }
+    return x;
   }
 };
 

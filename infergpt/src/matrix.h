@@ -150,7 +150,7 @@ class RowVector : public Matrix<T> {
 template <IsMatrix M>
 class RowView {
  public:
-  using Scalar = typename std::remove_reference_t<M>::Scalar;
+  using Scalar = typename std::remove_cvref_t<M>::Scalar;
   using Reference = decltype(std::declval<M&>()(0, 0));
   using Pointer = decltype(std::declval<M&>()[0]);
 
@@ -169,9 +169,15 @@ class RowView {
 };
 
 template <IsMatrix M>
+auto Row(M& m, int row) {
+  assert(row < m.Rows());
+  return RowView<M>{m, row};
+}
+
+template <IsMatrix M>
 class ColumnView {
  public:
-  using Scalar = typename  std::remove_reference_t<M>::Scalar;
+  using Scalar = typename  std::remove_cvref_t<M>::Scalar;
   using Reference = decltype(std::declval<M&>()(0, 0));
   using Pointer = decltype(std::declval<M&>()[0]);
 
@@ -190,13 +196,33 @@ class ColumnView {
 };
 
 template <IsMatrix M>
-auto Row(M& m, int row) {
-  assert(row < m.Rows());
-  return RowView<M>{m, row};
-}
-
-template <IsMatrix M>
 auto Column(M& m, int column) {
   assert(column < m.Columns());
   return ColumnView<M>{m, column};
+}
+
+template <IsVector V>
+class RowBroadcastView {
+ public:
+  using Scalar = typename std::remove_cvref_t<V>::Scalar;
+  using Reference = decltype(std::declval<V&>()[0]);
+  using Pointer = decltype(&std::declval<V&>()[0]);
+
+  RowBroadcastView(V& vector, int rows) :
+     vector_(vector), rows_(rows) {}
+  
+  int Rows() const { return rows_; }
+  int Columns() const { return vector_.get().Size(); }
+  
+  Pointer operator[](int row) const { return &vector_.get()[0]; }
+  Reference operator()(int row, int col) const { return vector_.get()[col]; }
+
+ private:
+  std::reference_wrapper<V> vector_; 
+  const int rows_;
+};
+
+template <IsVector V>
+auto BroadcastToRows(V& v, int rows) {
+  return RowBroadcastView<V>{v, rows};
 }

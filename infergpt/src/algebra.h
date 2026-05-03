@@ -77,20 +77,19 @@ auto Dot(const L& lhs, const R& rhs, int count = -1) {
   return sum;
 }
 
-template <IsMatrix M>
-auto RowMeanAndVariance(const M& m, int row) {
-  using T = typename std::remove_cvref_t<M>::Scalar;
-  const T scale = T{1} / m.Columns();
-  const T* src = m[row];
+template <IsVector V>
+auto MeanAndVariance(const V& v) {
+  using T = typename std::remove_cvref_t<V>::Scalar;
+  const T scale = T{1} / v.Size();
 
   T sum = T{0};
-  for (int i = 0; i < m.Columns(); ++i)
-    sum += src[i];
+  for (int i = 0; i < v.Size(); ++i)
+    sum += v[i];
   const T mean = sum * scale;
 
   T sumsqr = T{0};
-  for (int i = 0; i < m.Columns(); ++i) {
-    T diff = src[i] - mean;
+  for (int i = 0; i < v.Size(); ++i) {
+    T diff = v[i] - mean;
     sumsqr += diff * diff;
   }
   const T var = sumsqr * scale;
@@ -104,18 +103,44 @@ auto operator*(const L& lhs, const R& rhs) {
   assert(lhs.Columns() == rhs.Rows());
 
   Matrix<T> out(lhs.Rows(), rhs.Columns());
-  // TODO
+  for (int i = 0; i < lhs.Rows(); ++i) {
+    const T* row = lhs[i];
+    for (int j = 0; j < rhs.Columns(); ++j) {
+      T sum = T{0};
+      for (int k = 0; k < lhs.Columns(); ++k)
+        sum += row[k] * rhs(k, j);
+      out(i, j) = sum;
+    }
+  }
   return out;
 }
 
 template <IsMatrix L, IsMatrix R>
 L& operator+=(L& lhs, const R& rhs) {
-  // TODO
+  using T = typename L::Scalar;
+  assert(lhs.Rows() == rhs.Rows());
+  assert(lhs.Columns() == rhs.Columns());
+  for (int i = 0; i < lhs.Rows(); ++i) {
+    T* pl = lhs[i];
+    const T* pr = rhs[i];
+    for (int j = 0; j < lhs.Columns(); ++j)
+      pl[j] += pr[j];
+  }
   return lhs;
 }
 
 template <IsMatrix L, IsMatrix R>
 auto operator+(const L& lhs, const R& rhs) {
-  // TODO
-  return lhs;
+  using T = decltype(std::declval<typename L::Scalar>() + std::declval<typename R::Scalar>());
+  assert(lhs.Rows() == rhs.Rows());
+  assert(lhs.Columns() == rhs.Columns());
+  Matrix<T> out{lhs.Rows(), lhs.Columns()};
+  for (int i = 0; i < lhs.Rows(); ++i) {
+    T* pd = out[i];
+    const T* pl = lhs[i];
+    const T* pr = rhs[i];
+    for (int j = 0; j < lhs.Columns(); ++j)
+      pd[j] = pl[j] + pr[j];
+  }
+  return out;
 }

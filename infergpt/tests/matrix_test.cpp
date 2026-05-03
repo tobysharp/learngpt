@@ -15,6 +15,11 @@ static_assert(std::is_same_v<decltype(std::declval<RowView<ConstMatrix>>()[0]), 
 static_assert(std::is_same_v<decltype(std::declval<ColumnView<MutableMatrix>>()[0]), int&>);
 static_assert(std::is_same_v<decltype(std::declval<ColumnView<ConstMatrix>>()[0]), const int&>);
 static_assert(!std::is_assignable_v<SubMatrixView<const MutableMatrix>&, const MutableMatrix&>);
+static_assert(!std::is_assignable_v<decltype(std::declval<const MutableMatrix&>()[0][0]), int>);
+static_assert(!std::is_assignable_v<decltype(std::declval<RowView<ConstMatrix>>()[0]), int>);
+static_assert(!std::is_assignable_v<decltype(std::declval<ColumnView<ConstMatrix>>()[0]), int>);
+static_assert(!std::is_assignable_v<decltype(std::declval<decltype(Block(std::declval<const MutableMatrix&>(), 0, 0, 1, 1))>()[0][0]), int>);
+static_assert(!std::is_assignable_v<decltype(std::declval<decltype(BroadcastToRows(std::declval<const RowVector<int>&>(), 1))>()(0, 0)), int>);
 
 void FillSequential(MutableMatrix* matrix) {
   int value = 0;
@@ -89,10 +94,32 @@ void TestTransposeAndRowVectorStorage() {
   assert(vector[3] == 13);
 }
 
+void TestRowBroadcastView() {
+  RowVector<int> bias{3};
+  bias[0] = 5;
+  bias[1] = 6;
+  bias[2] = 7;
+
+  const auto broadcast = BroadcastToRows(bias, 4);
+  assert(broadcast.Rows() == 4);
+  assert(broadcast.Columns() == 3);
+  for (int row = 0; row < broadcast.Rows(); ++row) {
+    assert(broadcast[row][0] == 5);
+    assert(broadcast(row, 1) == 6);
+    assert(broadcast(row, 2) == 7);
+  }
+
+  const RowVector<int>& const_bias = bias;
+  const auto const_broadcast = BroadcastToRows(const_bias, 2);
+  static_assert(std::is_same_v<decltype(const_broadcast(0, 0)), const int&>);
+  assert(const_broadcast(1, 2) == 7);
+}
+
 }  // namespace
 
 int main() {
   TestRowAndColumnViewsPreserveConstnessAndMutability();
   TestBlockViewMutationAndNestedBlocks();
   TestTransposeAndRowVectorStorage();
+  TestRowBroadcastView();
 }

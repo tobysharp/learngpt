@@ -7,3 +7,4 @@ endfunction()
 
 add_infergpt_test(matrix_test)
 add_infergpt_test(algebra_test)
+add_infergpt_test(layers_test)
