@@ -45,15 +45,6 @@ class Model {
     return model;
   }
 
-  // Loads a list of token ids from a text file.
-  static RowVector<TokenId> LoadTokenIds(const std::filesystem::path& path) {
-    std::vector<TokenId> tokens;
-    std::string line;
-    for (std::ifstream f{path}; std::getline(f, line); )
-      tokens.push_back(std::atoi(line.c_str()));
-    return tokens;
-  }
-
   Matrix<T> Forward(std::span<const TokenId> inputs) const {
     Matrix<T> x = Embed(inputs);
     for (const auto& transformer : transformers_)
@@ -106,4 +97,13 @@ inline HyperParameters LoadHyperParameters(const std::filesystem::path& path) {
     .head_dimensions = dict["n_embd"] / dict["n_head"],
     .layers = dict["n_layer"]
   };
+}
+
+// Loads a list of token ids from a text file.
+inline std::vector<TokenId> LoadTokenIds(const std::filesystem::path& path) {
+  std::vector<TokenId> tokens;
+  std::string line;
+  for (std::ifstream f{path}; std::getline(f, line); )
+    tokens.push_back(std::atoi(line.c_str()));
+  return tokens;
 }

@@ -144,3 +144,18 @@ auto operator+(const L& lhs, const R& rhs) {
   }
   return out;
 }
+
+template <IsVector V>
+int ArgMax(const V& v) {
+  using T = typename V::Scalar;
+  assert(v.Size() > 0);
+  T max = v[0];
+  int pos = 0;
+  for (int i = 1; i < v.Size(); ++i) {
+    if (v[i] > max) {
+      pos = i;
+      max = v[i];
+    }
+  }
+  return pos;
+}

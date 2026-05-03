@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 
 
@@ -94,6 +96,46 @@ def generate(inputs, params, n_head, n_tokens_to_generate):
     return inputs[len(inputs) - n_tokens_to_generate :]  # only return generated ids
 
 
+def decode_output_file(
+    token_ids_path: str | None = None,
+    input_ids_path: str | None = None,
+    model_size: str = "124M",
+    models_dir: str | None = None,
+):
+    from utils import load_encoder_hparams_and_params
+
+    repo_root = Path(__file__).resolve().parent.parent
+    resolved_token_ids_path = Path(token_ids_path) if token_ids_path else repo_root / "output.txt"
+    resolved_input_ids_path = Path(input_ids_path) if input_ids_path else repo_root / "input.txt"
+    resolved_models_dir = Path(models_dir) if models_dir else repo_root / "models"
+
+    with resolved_input_ids_path.open("r", encoding="ascii") as file_handle:
+        input_ids = [int(line.strip()) for line in file_handle if line.strip()]
+
+    with resolved_token_ids_path.open("r", encoding="ascii") as file_handle:
+        expected_output_ids = [int(line.strip()) for line in file_handle if line.strip()]
+
+    encoder, hparams, params = load_encoder_hparams_and_params(model_size, str(resolved_models_dir))
+    assert len(input_ids) + len(expected_output_ids) < hparams["n_ctx"]
+
+    generated_output_ids = generate(input_ids.copy(), params, hparams["n_head"], len(expected_output_ids))
+
+    if generated_output_ids != expected_output_ids:
+        mismatch_index = next(
+            index
+            for index, (generated_id, expected_id) in enumerate(zip(generated_output_ids, expected_output_ids))
+            if generated_id != expected_id
+        )
+        raise ValueError(
+            "Generated tokens do not match output.txt at index "
+            f"{mismatch_index}: expected {expected_output_ids[mismatch_index]}, got {generated_output_ids[mismatch_index]}"
+        )
+
+    print(f"Validated {len(expected_output_ids)} generated tokens: match")
+
+    return encoder.decode(generated_output_ids)
+
+
 def main(
     prompt: str,
     n_tokens_to_generate: int = 40,
@@ -128,4 +170,23 @@ def main(
 if __name__ == "__main__":
     import fire
 
-    fire.Fire(main)
+    class GPT2CLI:
+        def __call__(
+            self,
+            prompt: str,
+            n_tokens_to_generate: int = 40,
+            model_size: str = "124M",
+            models_dir: str = "models",
+        ):
+            return main(prompt, n_tokens_to_generate, model_size, models_dir)
+
+        def decode_output_file(
+            self,
+            token_ids_path: str | None = None,
+            input_ids_path: str | None = None,
+            model_size: str = "124M",
+            models_dir: str | None = None,
+        ):
+            return decode_output_file(token_ids_path, input_ids_path, model_size, models_dir)
+
+    fire.Fire(GPT2CLI)
