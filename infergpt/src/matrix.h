@@ -15,23 +15,16 @@
 template <typename M>
 concept IsMatrix = requires(M m, int i, int j) {
   typename std::remove_cvref_t<M>::Scalar;
-  typename std::remove_cvref_t<M>::RowAxis;
-  typename std::remove_cvref_t<M>::ColAxis;
   { m.Rows() } -> std::convertible_to<int>;
   { m.Columns() } -> std::convertible_to<int>;
   { m[i] };
   { m(i, j) };
 };
 
-struct DynamicAxis{};
-struct One{};
-
-template <IsMatrix M, typename RowsTag, typename ColsTag>
+template <IsMatrix M>
 class SubMatrixView {
  public:
   using Scalar = typename std::remove_cvref_t<M>::Scalar;
-  using RowAxis = RowsTag;
-  using ColAxis = ColsTag;
 
   SubMatrixView(M& matrix, int row_begin, int col_begin, int rows, int cols) :
      matrix_(matrix), row_index_(row_begin, row_begin + rows), col_index_(col_begin, col_begin + cols) {}
@@ -50,12 +43,7 @@ class SubMatrixView {
     requires (!std::is_const_v<std::remove_reference_t<M>>)
   SubMatrixView& operator=(const Rhs& rhs) {
     using R = std::remove_cvref_t<Rhs>;
-    using RRows = typename R::RowAxis;
-    using RCols = typename R::ColAxis;
-    static_assert(std::is_same_v<RRows, RowAxis>);
-    static_assert(std::is_same_v<RCols, ColAxis>);
     static_assert(std::is_convertible_v<typename R::Scalar, Scalar>);
-
     assert(rhs.Rows() == Rows());
     assert(rhs.Columns() == Columns());
 
@@ -75,27 +63,25 @@ class SubMatrixView {
   std::pair<int, int> col_index_;
 };
 
-template <typename RowAxis, typename ColAxis, IsMatrix M>
+template <IsMatrix M>
 auto Block(M& m, int row, int col, int rows, int cols) {
-  return SubMatrixView<M, RowAxis, ColAxis>(m, row, col, rows, cols);
+  return SubMatrixView<M>(m, row, col, rows, cols);
 }
 
-template <typename RowAxis, typename ColAxis, IsMatrix M, typename MRowAxis, typename MColAxis>
-auto Block(SubMatrixView<M, MRowAxis, MColAxis>& m, int row, int col, int rows, int cols) {
-  return SubMatrixView<M, RowAxis, ColAxis>{m.Base(), m.RowBegin() + row, m.ColBegin() + col, rows, cols}; 
+template <IsMatrix M>
+auto Block(SubMatrixView<M>& m, int row, int col, int rows, int cols) {
+  return SubMatrixView<M>{m.Base(), m.RowBegin() + row, m.ColBegin() + col, rows, cols}; 
 }
 
-template <typename RowAxis, typename ColAxis, IsMatrix M, typename MRowAxis, typename MColAxis>
-auto Block(const SubMatrixView<M, MRowAxis, MColAxis>& m, int row, int col, int rows, int cols) {
-  return SubMatrixView<const M, RowAxis, ColAxis>{m.Base(), m.RowBegin() + row, m.ColBegin() + col, rows, cols}; 
+template <IsMatrix M>
+auto Block(const SubMatrixView<M>& m, int row, int col, int rows, int cols) {
+  return SubMatrixView<const M>{m.Base(), m.RowBegin() + row, m.ColBegin() + col, rows, cols}; 
 }
 
-template <typename T, typename RowsTag, typename ColsTag>
+template <typename T>
 class Matrix {
  public:
   using Scalar = T;
-  using RowAxis = RowsTag;
-  using ColAxis = ColsTag;
 
   Matrix(int rows, int cols) : rows_(rows), cols_(cols), data_(rows * cols) {}
   Matrix(int rows, int cols, std::vector<T>&& data) : rows_(rows), cols_(cols), data_(std::move(data)) {}
@@ -127,7 +113,7 @@ class Matrix {
 template <IsMatrix M>
 auto Transpose(const M& m) {
   using R = typename std::remove_cvref_t<M>;
-  Matrix<typename R::Scalar, typename R::ColAxis, typename R::RowAxis> result{m.Columns(), m.Rows()};
+  Matrix<typename R::Scalar> result{m.Columns(), m.Rows()};
   for (int i = 0; i < m.Rows(); ++i) {
     const auto* src = m[i];
     for (int j = 0; j < m.Columns(); ++j)
@@ -139,19 +125,16 @@ auto Transpose(const M& m) {
 template <typename V>
 concept IsVector = requires(V v, int i) {
   typename std::remove_cvref_t<V>::Scalar;
-  typename std::remove_cvref_t<V>::Axis;
   { v.Size() } -> std::convertible_to<int>;
   { v[i] };
 };
 
 // A row vector.
-template <typename T, typename ColsTag>
-class RowVector : public Matrix<T, One, ColsTag> {
+template <typename T>
+class RowVector : public Matrix<T> {
  public:
-  using Axis = ColsTag;
-
-  explicit RowVector(int cols) : Matrix<T, One, ColsTag>(1, cols) {}
-  RowVector(std::vector<T>&& data) : Matrix<T, One, ColsTag>(1, std::ssize(data), std::move(data)) {}
+  explicit RowVector(int cols) : Matrix<T>(1, cols) {}
+  RowVector(std::vector<T>&& data) : Matrix<T>(1, std::ssize(data), std::move(data)) {}
   RowVector(const RowVector&) = default;
   RowVector(RowVector&&) = default;
 
@@ -164,15 +147,12 @@ class RowVector : public Matrix<T, One, ColsTag> {
   operator std::span<const T>() const { return this->data_; }
 };
 
-template <IsMatrix M, typename ColsTag>
+template <IsMatrix M>
 class RowView {
  public:
   using Scalar = typename std::remove_reference_t<M>::Scalar;
   using Reference = decltype(std::declval<M&>()(0, 0));
   using Pointer = decltype(std::declval<M&>()[0]);
-  using RowAxis = One;
-  using ColAxis = ColsTag;
-  using Axis = ColsTag;
 
   RowView(M& matrix, int row) :
      matrix_(matrix), data_(matrix[row]) {}
@@ -188,15 +168,12 @@ class RowView {
   Pointer data_;
 };
 
-template <IsMatrix M, typename RowsTag>
+template <IsMatrix M>
 class ColumnView {
  public:
   using Scalar = typename  std::remove_reference_t<M>::Scalar;
   using Reference = decltype(std::declval<M&>()(0, 0));
   using Pointer = decltype(std::declval<M&>()[0]);
-  using RowAxis = RowsTag;
-  using ColAxis = One;
-  using Axis = RowsTag;
 
   ColumnView(M& matrix, int col) :
      matrix_(matrix), column_(col) {}
@@ -215,11 +192,11 @@ class ColumnView {
 template <IsMatrix M>
 auto Row(M& m, int row) {
   assert(row < m.Rows());
-  return RowView<M, typename std::remove_cvref_t<M>::ColAxis>{m, row};
+  return RowView<M>{m, row};
 }
 
 template <IsMatrix M>
 auto Column(M& m, int column) {
   assert(column < m.Columns());
-  return ColumnView<M, typename std::remove_cvref_t<M>::RowAxis>{m, column};
+  return ColumnView<M>{m, column};
 }
