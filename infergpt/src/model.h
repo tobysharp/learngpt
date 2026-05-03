@@ -31,7 +31,7 @@ class Model {
     wte_(hyper_params.vocabulary_size, hyper_params.EmbeddingSize()),
     wpe_(hyper_params.context_limit, hyper_params.EmbeddingSize()),
     ln_f(hyper_params.EmbeddingSize()),
-    transformers_(hyper_params.layers, Transformer<T>{hyper_params.EmbeddingSize(), hyper_params.attention_heads}) {
+    transformers_(hyper_params.layers, Transformer<T, EmbedSize, EmbedSizeX3, EmbedSizeX4>{hyper_params.EmbeddingSize(), hyper_params.attention_heads}) {
   }
 
   static Model Load(const HyperParameters& hyper_params, const std::filesystem::path& dir) {
@@ -45,16 +45,31 @@ class Model {
     return model;
   }
 
-  Matrix<T> Forward(std::span<const TokenId> inputs) const {
-    Matrix<T> x = Embed(inputs);
+  struct VocabSize {};
+  struct EmbedSize {};
+  struct EmbedSizeX3 {};
+  struct EmbedSizeX4 {};
+  struct SeqSize {};
+
+  // Loads a list of token ids from a text file.
+  static RowVector<TokenId, SeqSize> LoadTokenIds(const std::filesystem::path& path) {
+    std::vector<TokenId> tokens;
+    std::string line;
+    for (std::ifstream f{path}; std::getline(f, line); )
+      tokens.push_back(std::atoi(line.c_str()));
+    return tokens;
+  }
+
+  Matrix<T, SeqSize, VocabSize> Forward(std::span<const TokenId> inputs) const {
+    Matrix<T, SeqSize, EmbedSize> x = Embed(inputs);
     for (const auto& transformer : transformers_)
-      x = transformer(x);
+      x = transformer(std::move(x));
     return ln_f(x) * Transpose(wte_);
   }
 
  private:
-  Matrix<T> Embed(std::span<const TokenId> inputs) const {
-    Matrix<T> result{static_cast<int>(std::ssize(inputs)), wte_.Columns()};
+  Matrix<T, SeqSize, EmbedSize> Embed(std::span<const TokenId> inputs) const {
+    Matrix<T, SeqSize, EmbedSize> result{static_cast<int>(std::ssize(inputs)), wte_.Columns()};
     for (int i = 0; i < std::ssize(inputs); ++i) {
       const float* token = wte_[inputs[i]];
       const float* pos = wpe_[i];
@@ -66,9 +81,10 @@ class Model {
   }
 
   HyperParameters hyper_params_;
-  Matrix<T> wte_, wpe_;
-  LayerNorm<T> ln_f;
-  std::vector<Transformer<T>> transformers_;
+  Matrix<T, VocabSize, EmbedSize> wte_;
+  Matrix<T, SeqSize, EmbedSize> wpe_;
+  LayerNorm<T, EmbedSize> ln_f;
+  std::vector<Transformer<T, EmbedSize, EmbedSizeX3, EmbedSizeX4>> transformers_;
 };
 
 // Splits a string like "name: 42" or "name, 42".
@@ -96,13 +112,4 @@ inline HyperParameters LoadHyperParameters(const std::filesystem::path& path) {
     .head_dimensions = dict["n_embd"] / dict["n_head"],
     .layers = dict["n_layer"]
   };
-}
-
-// Loads a list of token ids from a text file.
-inline Vector<TokenId> LoadTokenIds(const std::filesystem::path& path) {
-  std::vector<TokenId> tokens;
-  std::string line;
-  for (std::ifstream f{path}; std::getline(f, line); )
-    tokens.push_back(std::atoi(line.c_str()));
-  return tokens;
 }
