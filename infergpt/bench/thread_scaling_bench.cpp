@@ -35,6 +35,7 @@ struct Options {
   std::optional<std::string> case_name;
   std::optional<int> rows;
   double seconds = 0.2;
+  int lrows_per_block = 8;
   int rrows_per_block = 64;
 };
 
@@ -80,26 +81,32 @@ double FlopsPerIteration(const Scenario& scenario) {
   return static_cast<double>(scenario.rows) * scenario.output_columns * (2.0 * scenario.input_columns + 1.0);
 }
 
-void MatMulXYTParallel(const Matrix<float>& lhs, const Matrix<float>& rhs, Matrix<float>* out, ThreadPool* pool, int rrows_per_block) {
+void MatMulXYTParallel(const Matrix<float>& lhs, const Matrix<float>& rhs, Matrix<float>* out, ThreadPool* pool, int lrows_per_block, int rrows_per_block) {
   const int lrows = lhs.Rows();
   const int lcols = lhs.Columns();
   const int rrows = rhs.Rows();
-  const int blocks_per_lrow = (rrows + rrows_per_block - 1) / rrows_per_block;
-  const int total_blocks = lrows * blocks_per_lrow;
+  const int lrow_blocks = (lrows + lrows_per_block - 1) / lrows_per_block;
+  const int rrow_blocks = (rrows + rrows_per_block - 1) / rrows_per_block;
+  const int total_blocks = lrow_blocks * rrow_blocks;
 
   pool->ParallelFor(0, total_blocks, [&](int index) {
-    const int lrow = index / blocks_per_lrow;
-    const int block_index = index % blocks_per_lrow;
-    const int rrow_begin = block_index * rrows_per_block;
+    const int lblock = index / rrow_blocks;
+    const int rblock = index % rrow_blocks;
+    const int lrow_begin = lblock * lrows_per_block;
+    const int lrow_end = std::min(lrow_begin + lrows_per_block, lrows);
+    const int rrow_begin = rblock * rrows_per_block;
     const int rrow_end = std::min(rrow_begin + rrows_per_block, rrows);
-    const float* pl = lhs.RowData(lrow);
-    float* pout = out->RowData(lrow);
-    for (int j = rrow_begin; j < rrow_end; ++j) {
-      const float* pr = rhs.RowData(j);
-      float sum = 0.0f;
-      for (int k = 0; k < lcols; ++k)
-        sum += pl[k] * pr[k];
-      pout[j] = sum;
+
+    for (int lrow = lrow_begin; lrow < lrow_end; ++lrow) {
+      const float* pl = lhs.RowData(lrow);
+      float* pout = out->RowData(lrow);
+      for (int j = rrow_begin; j < rrow_end; ++j) {
+        const float* pr = rhs.RowData(j);
+        float sum = 0.0f;
+        for (int k = 0; k < lcols; ++k)
+          sum += pl[k] * pr[k];
+        pout[j] = sum;
+      }
     }
   });
 }
@@ -121,7 +128,7 @@ std::vector<Scenario> BuildScenarios(const Options& options) {
 
 void PrintUsage(const char* argv0) {
   std::cout
-    << "Usage: " << argv0 << " [--case NAME] [--rows N] [--seconds S] [--rrows-per-block N]\n";
+    << "Usage: " << argv0 << " [--case NAME] [--rows N] [--seconds S] [--lrows-per-block N] [--rrows-per-block N]\n";
 }
 
 Options ParseOptions(int argc, char** argv) {
@@ -139,6 +146,8 @@ Options ParseOptions(int argc, char** argv) {
       options.rows = std::atoi(require_value(arg));
     } else if (arg == "--seconds") {
       options.seconds = std::atof(require_value(arg));
+    } else if (arg == "--lrows-per-block") {
+      options.lrows_per_block = std::atoi(require_value(arg));
     } else if (arg == "--rrows-per-block") {
       options.rrows_per_block = std::atoi(require_value(arg));
     } else if (arg == "--help" || arg == "-h") {
@@ -151,7 +160,7 @@ Options ParseOptions(int argc, char** argv) {
   return options;
 }
 
-void RunScenario(const Scenario& scenario, double seconds, int rrows_per_block) {
+void RunScenario(const Scenario& scenario, double seconds, int lrows_per_block, int rrows_per_block) {
   Matrix<float> lhs{scenario.rows, scenario.input_columns};
   Matrix<float> rhs{scenario.output_columns, scenario.input_columns};
   Matrix<float> out{scenario.rows, scenario.output_columns};
@@ -166,18 +175,19 @@ void RunScenario(const Scenario& scenario, double seconds, int rrows_per_block) 
     thread_counts.push_back(static_cast<int>(hw));
 
   std::cout << "Scenario " << scenario.name << " rows=" << scenario.rows << " in=" << scenario.input_columns
-            << " out=" << scenario.output_columns << " rrows_per_block=" << rrows_per_block << '\n';
+            << " out=" << scenario.output_columns << " lrows_per_block=" << lrows_per_block
+            << " rrows_per_block=" << rrows_per_block << '\n';
   for (int threads : thread_counts) {
     ThreadPool pool{threads};
     volatile double sink = 0.0;
-    MatMulXYTParallel(lhs, rhs, &out, &pool, rrows_per_block);
+    MatMulXYTParallel(lhs, rhs, &out, &pool, lrows_per_block, rrows_per_block);
     sink += Checksum(out);
 
     int iterations = 0;
     const auto start = Clock::now();
     auto now = start;
     do {
-      MatMulXYTParallel(lhs, rhs, &out, &pool, rrows_per_block);
+      MatMulXYTParallel(lhs, rhs, &out, &pool, lrows_per_block, rrows_per_block);
       sink += Checksum(out);
       ++iterations;
       now = Clock::now();
@@ -205,7 +215,7 @@ int main(int argc, char** argv) {
       return 1;
     }
     for (const Scenario& scenario : scenarios)
-      RunScenario(scenario, options.seconds, options.rrows_per_block);
+      RunScenario(scenario, options.seconds, options.lrows_per_block, options.rrows_per_block);
     return 0;
   } catch (const std::exception& ex) {
     std::cerr << ex.what() << '\n';

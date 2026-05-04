@@ -85,20 +85,26 @@ auto MatMul_XYT(const X& lhs, const Y& rhs) {
   const int rrows = rhs.Rows();
   Matrix<T> out(lrows, rrows);
 
+  constexpr int lrows_per_block = 12;
   constexpr int rrows_per_block = 64;
-  const int blocks_per_lrow = (rrows + rrows_per_block - 1) / rrows_per_block;
-  const int total_blocks = lrows * blocks_per_lrow;
+  const int lrow_blocks = (lrows + lrows_per_block - 1) / lrows_per_block;
+  const int rrow_blocks = (rrows + rrows_per_block - 1) / rrows_per_block;
+  const int total_blocks = lrow_blocks * rrow_blocks;
   
   ParallelFor(0, total_blocks, [&](int i) {
-    const int lrow = i / blocks_per_lrow;
-    const int block_index = i % blocks_per_lrow;
-    const int rrow_begin = block_index * rrows_per_block;
+    const int lblock = i / rrow_blocks;
+    const int rblock = i % rrow_blocks;
+    const int lrow_begin = lblock * lrows_per_block;
+    const int lrow_end = std::min(lrow_begin + lrows_per_block, lrows);
+    const int rrow_begin = rblock * rrows_per_block;
     const int rrow_end = std::min(rrow_begin + rrows_per_block, rrows);
-  
-    const T* pl = lhs.RowData(lrow);
-    T* pout = out.RowData(lrow);
-    for (int j = rrow_begin; j < rrow_end; ++j)
-      pout[j] = XYT_Kernel(pl, rhs.RowData(j), lcols);
+
+    for (int lrow = lrow_begin; lrow < lrow_end; ++lrow) {
+      const T* pl = lhs.RowData(lrow);
+      T* pout = out.RowData(lrow);
+      for (int j = rrow_begin; j < rrow_end; ++j)
+        pout[j] = XYT_Kernel(pl, rhs.RowData(j), lcols);
+    }
   });
   return out;
 }

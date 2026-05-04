@@ -59,8 +59,11 @@ Measured milestones from this thread:
 | After `-ffast-math -mavx2 -mfma` | `4.43s` |
 | Reconfirmed current best `-ffast-math -mavx2 -mfma` build | `4.49s` |
 | `-ffast-math -mavx512f -mfma` | `4.61s` |
+| First parallel `MatMul_XYT` baseline | `2.21s` |
+| Parallel 2D tile `8 x 64` | `2.02s` |
+| Parallel 2D tile `12 x 64` | `~1.84s` to `1.94s` |
 
-Overall improvement from the original baseline to the current best build is about `168s -> 4.4s`, roughly `38x` faster.
+Overall improvement from the original baseline to the current best build is about `168s -> ~1.9s`, roughly `85x` faster.
 
 ## Major Optimization Steps
 
@@ -233,7 +236,114 @@ Threading observation:
 - No `OPENBLAS_NUM_THREADS` or `OMP_NUM_THREADS` limit was set
 - Interpretation: the Python reference is likely using a 32-thread OpenBLAS worker pool on this 32-core machine
 
-This makes the current C++ result notable: the C++ implementation is faster even though it is still single-threaded.
+This remained notable even before adding C++ multithreading: the optimized single-threaded C++ implementation was already faster than the Python reference while Python was using a 32-thread OpenBLAS pool.
+
+## Parallelism Findings
+
+### Thread-pool baseline
+
+Relevant code:
+
+- [infergpt/src/pfor.h](/home/toby/dev/learngpt/infergpt/src/pfor.h)
+- [infergpt/src/algebra.h](/home/toby/dev/learngpt/infergpt/src/algebra.h)
+- [infergpt/bench/thread_scaling_bench.cpp](/home/toby/dev/learngpt/infergpt/bench/thread_scaling_bench.cpp)
+
+The first parallel version used a lightweight custom `ThreadPool` and parallelized `MatMul_XYT` over flattened `(lrow, rrow-block)` work items.
+
+Measured result:
+
+- End-to-end runtime dropped from about `4.49s` to `2.21s`
+- Generated output remained identical to [output.txt](/home/toby/dev/learngpt/output.txt)
+
+Important interpretation:
+
+- This was a meaningful latency win, but still far from linear scaling on a 32-core machine
+
+### Why the initial 32-core speedup was limited
+
+`perf stat` on the first parallel build showed:
+
+- elapsed time about `2.2157s`
+- task-clock about `30.3s`
+- average CPU utilization about `13.695 CPUs`
+- about `140.6B` cycles and `46.8B` instructions
+- about `85,651` context switches
+
+Interpretation:
+
+- The machine has 32 cores, but the workload only sustained about 13.7 CPUs on average
+- The issue was not just scheduler overhead; decode-time affine shapes are small enough that memory bandwidth, cache behavior, and limited work per task all matter
+
+### Scaling benchmark and what it showed
+
+To make scaling experiments easier, a dedicated benchmark was added:
+
+- [infergpt/bench/thread_scaling_bench.cpp](/home/toby/dev/learngpt/infergpt/bench/thread_scaling_bench.cpp)
+
+This benchmark sweeps thread counts and tile sizes for representative affine shapes.
+
+Representative findings from this thread:
+
+- `mlp_fc`, `rows=49`, untiled parallel baseline, `rrows_per_block=64`:
+  - `1 thread`: `85.35 GFLOP/s`
+  - `32 threads`: `596.92 GFLOP/s`
+  - roughly `7x` scaling, not `32x`
+- `attn_proj`, `rows=10`, untiled baseline:
+  - scaled well up to mid thread counts, then flattened or regressed by 32 threads
+- Sweeps over `rrows_per_block = 1, 8, 16, 32, 64, 128` showed that block size affected results at the margin, but did not remove the scaling ceiling
+
+Conclusion:
+
+- The dominant limit was not a single bad block-size choice; it was the combination of small decode-time problem sizes and cache/bandwidth pressure
+
+### Simple `K`-blocking was not a win
+
+A straightforward attempt was made to add `K`-blocking inside each existing parallel task.
+
+Variants tried:
+
+- `kcols_per_block = 256`
+- `kcols_per_block = 768`
+
+Measured result:
+
+- `256` made the full run worse: about `2.25s`
+- `768` recovered most of the loss, but still did not beat the simpler baseline: about `2.21s`
+
+Interpretation:
+
+- Naive `K`-blocking added extra accumulation and loop overhead without improving locality enough to matter
+- If deeper tiling is pursued in future, it should probably be a small accumulator or microkernel-style approach rather than just splitting `K`
+
+### Simple 2D output tiling did help
+
+The next experiment changed the parallel work shape from one `lrow` at a time to a small 2D output tile:
+
+- `lrows_per_block x rrows_per_block`
+- the inner `K` reduction for each output cell was otherwise unchanged
+
+Measured full-run results from the tuning pass:
+
+- `4 x 64`: `2.07s`
+- `6 x 64`: `2.03s`
+- `8 x 64`: `2.02s`
+- `12 x 32`: `1.87s`
+- `12 x 64`: best setting, observed in the `1.84s` to `1.94s` range
+- `12 x 128`: `2.09s`
+
+The best tuned kernel configuration currently in [infergpt/src/algebra.h](/home/toby/dev/learngpt/infergpt/src/algebra.h) is:
+
+- `lrows_per_block = 12`
+- `rrows_per_block = 64`
+
+Why this likely helped:
+
+- Reusing the same `rhs` block across multiple `lhs` rows improved locality enough to matter in the real decode workload
+- The best end-to-end setting was not the same one that looked best on every isolated microbenchmark, which suggests the smaller decode-time shapes matter disproportionately for real latency
+
+### Practical current state
+
+Current best measured end-to-end runtime is the parallel tiled build at about `1.84s` to `1.94s`, with exact output preserved on the repository workload.
 
 ## Current State and Likely Next Work
 
@@ -241,6 +351,7 @@ Current best-known build state:
 
 - [infergpt/CMakeLists.txt](/home/toby/dev/learngpt/infergpt/CMakeLists.txt#L8) uses `-ffast-math -mavx2 -mfma` for Release builds
 - [infergpt/tests/layers_test.cpp](/home/toby/dev/learngpt/infergpt/tests/layers_test.cpp#L117) uses `lowest()` instead of `-infinity()` for fast-math friendliness
+- [infergpt/src/algebra.h](/home/toby/dev/learngpt/infergpt/src/algebra.h) currently uses a parallel `12 x 64` output tile inside `MatMul_XYT`
 
 What is probably left on the table for single-thread performance:
 
@@ -250,9 +361,11 @@ What is probably left on the table for single-thread performance:
 
 What is most promising overall from here:
 
-- lightweight multithreading over coarse output-column blocks or 2D tiles in the affine path
+- a small fixed microkernel or accumulator inside the current `12 x 64` parallel tile
+- fresh profiling on the current tiled build to verify whether `MatMul_XYT` still dominates or whether another part of the decode loop is now next
 
 Caution for future parallel work:
 
 - do not schedule one tiny task per output column
 - the decode workload has small row counts (`10..49`), so the granularity needs to be coarse enough that scheduling overhead does not dominate
+- do not assume a microbenchmark winner is automatically the end-to-end winner; in this workload, the small decode-time shapes can shift the best tile choice
