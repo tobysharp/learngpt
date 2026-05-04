@@ -5,6 +5,7 @@
 #include <utility>
 
 #include "matrix.h"
+#include "pfor.h"
 
 template <IsMatrix Src, IsMatrix Dst, typename F>
 void TransformImpl(const Src& src, Dst* dst, F&& fn) {
@@ -65,6 +66,15 @@ auto MeanAndVariance(const V& v) {
   return std::make_pair(mean, var);
 }
 
+template <typename T>
+inline T XYT_Kernel(const T* pl, const T* pr, int lcols)
+{
+  T sum = T{0};
+  for (int k = 0; k < lcols; ++k)
+    sum += pl[k] * pr[k];
+  return sum;
+}
+
 template <IsMatrix X, IsMatrix Y>
 auto MatMul_XYT(const X& lhs, const Y& rhs) {
   using T = decltype(std::declval<typename X::Scalar>() * std::declval<typename Y::Scalar>());
@@ -74,17 +84,22 @@ auto MatMul_XYT(const X& lhs, const Y& rhs) {
   const int lcols = lhs.Columns();
   const int rrows = rhs.Rows();
   Matrix<T> out(lrows, rrows);
-  for (int i = 0; i < lrows; ++i) {
-    const T* pl = lhs.RowData(i);
-    T* pout = out.RowData(i);
-    for (int j = 0; j < rrows; ++j) {
-      T sum = T{0};
-      const T* pr = rhs.RowData(j);
-      for (int k = 0; k < lcols; ++k)
-        sum += pl[k] * pr[k];
-      pout[j] = sum;
-    }
-  }
+
+  constexpr int rrows_per_block = 64;
+  const int blocks_per_lrow = (rrows + rrows_per_block - 1) / rrows_per_block;
+  const int total_blocks = lrows * blocks_per_lrow;
+  
+  ParallelFor(0, total_blocks, [&](int i) {
+    const int lrow = i / blocks_per_lrow;
+    const int block_index = i % blocks_per_lrow;
+    const int rrow_begin = block_index * rrows_per_block;
+    const int rrow_end = std::min(rrow_begin + rrows_per_block, rrows);
+  
+    const T* pl = lhs.RowData(lrow);
+    T* pout = out.RowData(lrow);
+    for (int j = rrow_begin; j < rrow_end; ++j)
+      pout[j] = XYT_Kernel(pl, rhs.RowData(j), lcols);
+  });
   return out;
 }
 
