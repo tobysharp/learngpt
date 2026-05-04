@@ -61,9 +61,12 @@ Measured milestones from this thread:
 | `-ffast-math -mavx512f -mfma` | `4.61s` |
 | First parallel `MatMul_XYT` baseline | `2.21s` |
 | Parallel 2D tile `8 x 64` | `2.02s` |
-| Parallel 2D tile `12 x 64` | `~1.84s` to `1.94s` |
+| Parallel 2D tile `12 x 64` | `~1.84s` to `1.97s` |
+| Parallel 2D tile `16 x 32` | `~1.70s` to `1.85s` |
+| Parallel 2D tile `16 x 64` | `1.96s` |
+| Reconfirmed reverted `16 x 32` auto-vectorized build | `1.72s` warmed, `1.87s` cold |
 
-Overall improvement from the original baseline to the current best build is about `168s -> ~1.9s`, roughly `85x` faster.
+Overall improvement from the original baseline to the current kept build is about `168s -> ~1.7s`, roughly `98x` faster.
 
 ## Major Optimization Steps
 
@@ -328,13 +331,22 @@ Measured full-run results from the tuning pass:
 - `6 x 64`: `2.03s`
 - `8 x 64`: `2.02s`
 - `12 x 32`: `1.87s`
-- `12 x 64`: best setting, observed in the `1.84s` to `1.94s` range
+- `12 x 64`: observed in the `1.84s` to `1.97s` range
+- `16 x 32`: observed in the `1.70s` to `1.85s` range
+- `16 x 64`: `1.96s`
 - `12 x 128`: `2.09s`
+
+An interleaved A/B rerun gave a clearer result than the original one-off timings:
+
+- `12 x 64`: 6 runs, average `1.858s`, range `1.83s` to `1.97s`
+- `16 x 32`: 6 runs, average `1.710s`, range `1.70s` to `1.72s`
+
+All repeated runs preserved exact output.
 
 The best tuned kernel configuration currently in [infergpt/src/algebra.h](/home/toby/dev/learngpt/infergpt/src/algebra.h) is:
 
-- `lrows_per_block = 12`
-- `rrows_per_block = 64`
+- `lrows_per_block = 16`
+- `rrows_per_block = 32`
 
 Why this likely helped:
 
@@ -343,7 +355,24 @@ Why this likely helped:
 
 ### Practical current state
 
-Current best measured end-to-end runtime is the parallel tiled build at about `1.84s` to `1.94s`, with exact output preserved on the repository workload.
+Current best measured end-to-end runtime is the reverted parallel tiled build with a `16 x 32` tile, observed in the `1.70s` to `1.85s` range, with exact output preserved on the repository workload.
+
+A fresh rerun after removing the later experiments gave:
+
+- cold run: `1.87s`
+- warmed runs: `1.72s`, `1.72s`, `1.72s`
+- all runs matched [output.txt](/home/toby/dev/learngpt/output.txt)
+
+### Later experiments were rolled back
+
+After the `16 x 32` auto-vectorized path was already running at about `1.71s`, additional complexity was tried on top:
+
+- hand-written AVX2/FMA microkernels
+- packed `rhs` / outer-product layout experiments
+
+Those experiments did not produce a meaningful enough end-to-end gain to justify their maintenance cost, so they were rolled back.
+
+The repository's kept state is therefore the simpler auto-vectorized `MatMul_XYT` implementation in [infergpt/src/algebra.h](/home/toby/dev/learngpt/infergpt/src/algebra.h), using the `16 x 32` parallel tile and no custom microkernel code.
 
 ## Current State and Likely Next Work
 
@@ -351,7 +380,7 @@ Current best-known build state:
 
 - [infergpt/CMakeLists.txt](/home/toby/dev/learngpt/infergpt/CMakeLists.txt#L8) uses `-ffast-math -mavx2 -mfma` for Release builds
 - [infergpt/tests/layers_test.cpp](/home/toby/dev/learngpt/infergpt/tests/layers_test.cpp#L117) uses `lowest()` instead of `-infinity()` for fast-math friendliness
-- [infergpt/src/algebra.h](/home/toby/dev/learngpt/infergpt/src/algebra.h) currently uses a parallel `12 x 64` output tile inside `MatMul_XYT`
+- [infergpt/src/algebra.h](/home/toby/dev/learngpt/infergpt/src/algebra.h) currently uses the simpler parallel `16 x 32` output tile inside `MatMul_XYT`, relying on compiler auto-vectorization rather than a hand-written microkernel
 
 What is probably left on the table for single-thread performance:
 
@@ -361,7 +390,7 @@ What is probably left on the table for single-thread performance:
 
 What is most promising overall from here:
 
-- a small fixed microkernel or accumulator inside the current `12 x 64` parallel tile
+- keep the current `16 x 32` auto-vectorized path unless a future change shows a clearly larger end-to-end win for its added complexity
 - fresh profiling on the current tiled build to verify whether `MatMul_XYT` still dominates or whether another part of the decode loop is now next
 
 Caution for future parallel work:

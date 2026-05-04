@@ -85,8 +85,8 @@ auto MatMul_XYT(const X& lhs, const Y& rhs) {
   const int rrows = rhs.Rows();
   Matrix<T> out(lrows, rrows);
 
-  constexpr int lrows_per_block = 12;
-  constexpr int rrows_per_block = 64;
+  constexpr int lrows_per_block = 16;
+  constexpr int rrows_per_block = 32;
   const int lrow_blocks = (lrows + lrows_per_block - 1) / lrows_per_block;
   const int rrow_blocks = (rrows + rrows_per_block - 1) / rrows_per_block;
   const int total_blocks = lrow_blocks * rrow_blocks;
