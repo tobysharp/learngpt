@@ -203,7 +203,8 @@ void TestMultiHeadAttention() {
   RowVector<float> next_input{2};
   FillRowVector(&next_input, {1.0f, 1.0f});
   const auto actual_decode = attention.Decode(next_input, &cache);
-  assert(cache.Rows() == 3);
+  assert(cache.K.Rows() == 3);
+  assert(cache.V.Rows() == 3);
 
   const auto extended = MakeMatrix<float>(3, 2, {1, 0, 0, 1, 1, 1});
   const auto expected_attention = ManualSingleHeadCausalAttention(extended);
@@ -294,7 +295,8 @@ void TestTransformer() {
   RowVector<float> next_input{2};
   FillRowVector(&next_input, {5.0f, 6.0f});
   const auto actual_decode = transformer.Decode(next_input, &cache);
-  assert(cache.Rows() == 3);
+  assert(cache.K.Rows() == 3);
+  assert(cache.V.Rows() == 3);
 
   const auto next_matrix = MakeMatrix<float>(1, 2, {5, 6});
   const auto next_normed = ManualLayerNorm(next_matrix, transformer.ln_2.g, transformer.ln_2.b);

@@ -79,7 +79,9 @@ struct MultiHeadAttention {
     c_proj_.Load(stem + "_c_proj");
   }
 
-  using KVCache = Matrix<T>;
+  struct KVCache {
+    Matrix<T> K, V;
+  };
 
   std::tuple<Matrix<T>, KVCache> Prefill(Matrix<T> x) const {
     const int sequence_size = x.Rows();
@@ -92,24 +94,43 @@ struct MultiHeadAttention {
       auto v = Block(qkv, 0, 2 * embedding_size + i * dims_per_head, sequence_size, dims_per_head);
       Block(x, 0, dims_per_head * i, sequence_size, dims_per_head) = CausalAttention(q, k, v);
     }
-    KVCache cache = Block(qkv, 0, embedding_size, qkv.Rows(), 2 * embedding_size);
+    KVCache cache = { Block(qkv, 0, embedding_size, qkv.Rows(), embedding_size),
+                      Block(qkv, 0, 2 * embedding_size, qkv.Rows(), embedding_size) };
     return {c_proj_(x), cache};
   }
 
   RowVector<T> Decode(RowVector<T> x, KVCache* cache) const {
     const int embedding_size = x.Columns();
-    const auto qkv = c_attn_(x);  // QKV projection.
-    cache->AddRow(SubVector(qkv, embedding_size, 2 * embedding_size));
+    auto qkv = c_attn_(x);  // QKV projection.
+    cache->K.AddRow(SubVector(qkv, embedding_size, embedding_size));
+    cache->V.AddRow(SubVector(qkv, 2 * embedding_size, embedding_size));
+    const int sequence_size = cache->K.Rows();
   
     const int dims_per_head = embedding_size / heads_;
-    //ParallelFor(0, heads_, [&](int i) {
-    for (int i = 0; i < heads_; ++i) {
-      auto q = SubVector(qkv, i * dims_per_head, dims_per_head);
-      auto k = Block(*cache, 0, i * dims_per_head, cache->Rows(), dims_per_head);
-      auto v = Block(*cache, 0, embedding_size + i * dims_per_head, cache->Rows(), dims_per_head);
-      SubVector(x, dims_per_head * i, dims_per_head) = CausalAttention(q, k, v);
+    SubVector(qkv, 0, embedding_size) *= T{1} / std::sqrt(static_cast<T>(dims_per_head));
+    Matrix<T> scores{heads_, sequence_size};
+    Zero(&x);
+
+    for (int r = 0; r < sequence_size; ++r) {
+      auto K_r = Row(cache->K, r);
+      for (int h = 0; h < heads_; ++h) {
+        auto Q_h_r_scaled = SubVector(qkv, h * dims_per_head, dims_per_head);
+        auto K_h_r = SubVector(K_r, h * dims_per_head, dims_per_head);
+        scores(h, r) = Dot(Q_h_r_scaled, K_h_r);
+      }
     }
-    //);
+    
+    for (int h = 0; h < heads_; ++h)
+      SoftmaxInPlace(Row(scores, h));
+
+    for (int r = 0; r < sequence_size; ++r) {
+      auto V_r = Row(cache->V, r);
+        for (int h = 0; h < heads_; ++h) {
+          auto V_h_r = SubVector(V_r, h * dims_per_head, dims_per_head);
+          SubVector(x, h * dims_per_head, dims_per_head) += V_h_r * scores(h, r);
+      }
+    }
+
     return c_proj_(x);
   }
 
@@ -119,7 +140,9 @@ struct MultiHeadAttention {
 
  private:
   // Applies the softmax function to the first `count` elements of `x` in place.
-  static void SoftmaxInPlace(RowVector<T>& x, int count) {
+  template <IsVector X>
+  static void SoftmaxInPlace(X&& x, int count = -1) {
+    if (count < 0) count = x.Size();
     T x_max = std::numeric_limits<T>::lowest();
     for (int i = 0; i < count; ++i)
       x_max = std::max(x_max, x(i));
@@ -164,7 +187,7 @@ struct MultiHeadAttention {
   static RowVector<T> CausalAttention(const Qi& qi, const KV& k, const KV& v) {
     const T scale = T{1} / std::sqrt(static_cast<T>(qi.Size()));
     RowVector<T> row = MatMul_XYT(qi * scale, k);
-    SoftmaxInPlace(row, row.Size());
+    SoftmaxInPlace(row);
     return row * v;
   }
 

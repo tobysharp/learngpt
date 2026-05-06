@@ -42,6 +42,11 @@ ValueTensor<X> Transform(const X& x, F&& fn) {
   return result;
 }
 
+template <IsMatrix X>
+void Zero(X* x) {
+  TransformImpl(*x, x, [](auto) { return typename X::Scalar{0}; });
+}
+
 template <IsVector L, IsVector R>
 auto Dot(const L& lhs, const R& rhs) {
   assert(lhs.Size() == rhs.Size());
@@ -249,4 +254,19 @@ auto operator*(const V& lhs, T rhs) {
 template <IsVector Lhs, IsMatrix Rhs>
 auto operator*(const Lhs& lhs, const Rhs& rhs) {
   return MatMul_XY(lhs, rhs);
+}
+
+template <IsVector V, std::floating_point T>
+decltype(auto) operator*=(V&& lhs, T rhs) {
+  for (int i = 0; i < lhs.Size(); ++i)
+    lhs(i) *= rhs;
+  return std::forward<V>(lhs);
+}
+
+template <IsVector V, IsVector W>
+decltype(auto) operator+=(V&& lhs, const W& rhs) {
+  assert(lhs.Size() == rhs.Size());
+  for (int i = 0; i < lhs.Size(); ++i)
+    lhs(i) += rhs(i);
+  return std::forward<V>(lhs);
 }

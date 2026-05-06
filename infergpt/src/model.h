@@ -62,7 +62,7 @@ class Model {
   }
 
   RowVector<T> Decode(TokenId input, Cache* cache) const {
-    const int position = cache->at(0).Rows();
+    const int position = cache->at(0).K.Rows();
     RowVector<T> x = Embed(input, position);
     for (int i = 0; i < std::ssize(transformers_); ++i)
       x = transformers_[i].Decode(std::move(x), &cache->at(i));
