@@ -193,11 +193,23 @@ void TestMultiHeadAttention() {
   attention.Load(stem.string());
 
   const auto input = MakeMatrix<float>(2, 2, {1, 0, 0, 1});
-  const auto actual = attention(input);
-  const auto expected = ManualSingleHeadCausalAttention(input);
-  for (int i = 0; i < actual.Rows(); ++i)
-    for (int j = 0; j < actual.Columns(); ++j)
-      ExpectNear(actual(i, j), expected(i, j), 1e-5f);
+  const auto [actual_prefill, cache0] = attention.Prefill(input);
+  const auto expected_prefill = ManualSingleHeadCausalAttention(input);
+  for (int i = 0; i < actual_prefill.Rows(); ++i)
+    for (int j = 0; j < actual_prefill.Columns(); ++j)
+      ExpectNear(actual_prefill(i, j), expected_prefill(i, j), 1e-5f);
+
+  auto cache = cache0;
+  RowVector<float> next_input{2};
+  FillRowVector(&next_input, {1.0f, 1.0f});
+  const auto actual_decode = attention.Decode(next_input, &cache);
+  assert(cache.Rows() == 3);
+
+  const auto extended = MakeMatrix<float>(3, 2, {1, 0, 0, 1, 1, 1});
+  const auto expected_attention = ManualSingleHeadCausalAttention(extended);
+  const auto expected_decode = Row(expected_attention, -1);
+  for (int j = 0; j < actual_decode.Size(); ++j)
+    ExpectNear(actual_decode(j), expected_decode(j), 1e-5f);
 }
 
 void TestMultiLayerPerceptron() {
@@ -267,16 +279,30 @@ void TestTransformer() {
   FillRowVector(&transformer.mlp.c_proj.bias, {0.0f, 0.0f});
 
   const auto input = MakeMatrix<float>(2, 2, {1, 2, 3, 4});
-  const auto actual = transformer(input);
+  const auto [actual_prefill, cache0] = transformer.Prefill(input);
 
   const auto normed = ManualLayerNorm(input, transformer.ln_2.g, transformer.ln_2.b);
   const auto mlp_out = ManualMlp(normed, transformer.mlp.c_fc, transformer.mlp.c_proj);
-  auto expected = input;
-  expected += mlp_out;
+  auto expected_prefill = input;
+  expected_prefill += mlp_out;
 
-  for (int i = 0; i < actual.Rows(); ++i)
-    for (int j = 0; j < actual.Columns(); ++j)
-      ExpectNear(actual(i, j), expected(i, j), 1e-5f);
+  for (int i = 0; i < actual_prefill.Rows(); ++i)
+    for (int j = 0; j < actual_prefill.Columns(); ++j)
+      ExpectNear(actual_prefill(i, j), expected_prefill(i, j), 1e-5f);
+
+  auto cache = cache0;
+  RowVector<float> next_input{2};
+  FillRowVector(&next_input, {5.0f, 6.0f});
+  const auto actual_decode = transformer.Decode(next_input, &cache);
+  assert(cache.Rows() == 3);
+
+  const auto next_matrix = MakeMatrix<float>(1, 2, {5, 6});
+  const auto next_normed = ManualLayerNorm(next_matrix, transformer.ln_2.g, transformer.ln_2.b);
+  const auto next_mlp_out = ManualMlp(next_normed, transformer.mlp.c_fc, transformer.mlp.c_proj);
+  auto expected_decode = next_matrix;
+  expected_decode += next_mlp_out;
+  for (int j = 0; j < actual_decode.Size(); ++j)
+    ExpectNear(actual_decode(j), expected_decode(0, j), 1e-5f);
 }
 
 }  // namespace

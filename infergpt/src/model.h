@@ -27,6 +27,8 @@ struct HyperParameters {
 template <typename T = float>
 class Model {
  public:
+  using Cache = std::vector<typename MultiHeadAttention<T>::KVCache>;
+
   explicit Model(const HyperParameters& hyper_params) : hyper_params_(hyper_params),
     wte_(hyper_params.vocabulary_size, hyper_params.EmbeddingSize()),
     wpe_(hyper_params.context_limit, hyper_params.EmbeddingSize()),
@@ -45,28 +47,38 @@ class Model {
     return model;
   }
 
-  Matrix<T> Forward(std::span<const TokenId> inputs) const {
+  std::tuple<RowVector<T>, Cache> Prefill(std::span<const TokenId> inputs) const {
+    Cache cache;
+    cache.reserve(transformers_.size());
+  
     Matrix<T> x = Embed(inputs);
-    for (const auto& transformer : transformers_)
-      x = transformer(std::move(x));
-    // Last row of ln_f(x) * wte_ ^ T is
-    // Row(ln_f(x), -1) * Transpose(wte_)
-    // = 
-    auto last_row_x = Row(x, x.Rows() - 1);
-    return MatMul_XYT(ln_f(last_row_x), wte_);
+    for (int i = 0; i < std::ssize(transformers_); ++i) {
+      auto [next, kv] = transformers_[i].Prefill(std::move(x));
+      x = std::move(next);
+      cache.push_back(std::move(kv));
+    }
+    auto logits = MatMul_XYT(ln_f(Row(x, -1)), wte_);
+    return std::make_tuple(logits, cache);
+  }
+
+  RowVector<T> Decode(TokenId input, Cache* cache) const {
+    const int position = cache->at(0).Rows();
+    RowVector<T> x = Embed(input, position);
+    for (int i = 0; i < std::ssize(transformers_); ++i)
+      x = transformers_[i].Decode(std::move(x), &cache->at(i));
+    return MatMul_XYT(ln_f(std::move(x)), wte_);
   }
 
  private:
   Matrix<T> Embed(std::span<const TokenId> inputs) const {
     Matrix<T> result{static_cast<int>(std::ssize(inputs)), wte_.Columns()};
-    for (int i = 0; i < std::ssize(inputs); ++i) {
-      const float* token = wte_[inputs[i]];
-      const float* pos = wpe_[i];
-      float* dst = result[i];
-      for (int col = 0; col < wte_.Columns(); ++col)
-        dst[col] = token[col] + pos[col];
-    }
+    for (int i = 0; i < std::ssize(inputs); ++i)
+      Row(result, i) = Embed(inputs[i], i);
     return result;  
+  }
+
+  RowVector<T> Embed(TokenId input, int position) const {
+    return Row(wte_, input) + Row(wpe_, position);
   }
 
   HyperParameters hyper_params_;

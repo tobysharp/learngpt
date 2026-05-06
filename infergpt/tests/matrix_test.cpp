@@ -11,15 +11,11 @@ using ConstMatrix = const MutableMatrix;
 static_assert(IsMatrix<MutableMatrix>);
 static_assert(IsVector<RowVector<int>>);
 static_assert(IsMatrix<RowView<MutableMatrix>>);
-static_assert(IsMatrix<ColumnView<MutableMatrix>>);
 static_assert(std::is_same_v<decltype(std::declval<RowView<MutableMatrix>>()(0)), int&>);
 static_assert(std::is_same_v<decltype(std::declval<RowView<ConstMatrix>>()(0)), const int&>);
-static_assert(std::is_same_v<decltype(std::declval<ColumnView<MutableMatrix>>()(0)), int&>);
-static_assert(std::is_same_v<decltype(std::declval<ColumnView<ConstMatrix>>()(0)), const int&>);
 static_assert(!std::is_assignable_v<SubMatrixView<const MutableMatrix>&, const MutableMatrix&>);
 static_assert(!std::is_assignable_v<decltype(std::declval<const MutableMatrix&>()(0, 0)), int>);
 static_assert(!std::is_assignable_v<decltype(std::declval<RowView<ConstMatrix>>()(0)), int>);
-static_assert(!std::is_assignable_v<decltype(std::declval<ColumnView<ConstMatrix>>()(0)), int>);
 static_assert(!std::is_assignable_v<decltype(std::declval<decltype(Block(std::declval<const MutableMatrix&>(), 0, 0, 1, 1))>()(0, 0)), int>);
 static_assert(!std::is_assignable_v<decltype(std::declval<decltype(BroadcastToRows(std::declval<const RowVector<int>&>(), 1))>()(0, 0)), int>);
 
@@ -31,7 +27,7 @@ void FillSequential(MutableMatrix* matrix) {
   }
 }
 
-void TestRowAndColumnViewsPreserveConstnessAndMutability() {
+void TestRowViewsPreserveConstnessAndMutability() {
   MutableMatrix matrix{3, 4};
   FillSequential(&matrix);
 
@@ -41,19 +37,31 @@ void TestRowAndColumnViewsPreserveConstnessAndMutability() {
   assert(matrix(1, 2) == 99);
   assert(row.RowData(0)[2] == 99);
 
-  auto column = Column(matrix, 3);
-  static_assert(std::is_same_v<decltype(column(0)), int&>);
-  column(2) = -7;
-  assert(matrix(2, 3) == -7);
-  assert(*column.RowData(2) == -7);
-
   const MutableMatrix& const_matrix = matrix;
   auto const_row = Row(const_matrix, 0);
-  auto const_column = Column(const_matrix, 1);
   static_assert(std::is_same_v<decltype(const_row(0)), const int&>);
-  static_assert(std::is_same_v<decltype(const_column(0)), const int&>);
   assert(const_row(3) == matrix(0, 3));
-  assert(const_column(2) == matrix(2, 1));
+}
+
+void TestSubVectorAndAddRow() {
+  RowVector<int> vector{5};
+  for (int i = 0; i < vector.Size(); ++i)
+    vector(i) = i + 1;
+
+  auto middle = SubVector(vector, 1, 3);
+  static_assert(std::is_same_v<decltype(middle(0)), int&>);
+  middle(1) = 99;
+  assert(vector(2) == 99);
+
+  MutableMatrix matrix{1, 3};
+  matrix(0, 0) = 7;
+  matrix(0, 1) = 8;
+  matrix(0, 2) = 9;
+  matrix.AddRow(middle);
+  assert(matrix.Rows() == 2);
+  assert(matrix(1, 0) == 2);
+  assert(matrix(1, 1) == 99);
+  assert(matrix(1, 2) == 4);
 }
 
 void TestBlockViewMutationAndNestedBlocks() {
@@ -122,7 +130,8 @@ void TestRowBroadcastView() {
 }  // namespace
 
 int main() {
-  TestRowAndColumnViewsPreserveConstnessAndMutability();
+  TestRowViewsPreserveConstnessAndMutability();
+  TestSubVectorAndAddRow();
   TestBlockViewMutationAndNestedBlocks();
   TestTransposeAndRowVectorStorage();
   TestRowBroadcastView();

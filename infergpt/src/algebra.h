@@ -8,6 +8,7 @@
 #include "pfor.h"
 
 template <IsMatrix Src, IsMatrix Dst, typename F>
+  requires (!IsVector<Src>)
 void TransformImpl(const Src& src, Dst* dst, F&& fn) {
   assert(src.Rows() == dst->Rows());
   assert(src.Columns() == dst->Columns());
@@ -20,28 +21,34 @@ void TransformImpl(const Src& src, Dst* dst, F&& fn) {
   }
 }
 
-template <typename T, typename F>
-Matrix<T> Transform(Matrix<T> m, F&& fn) {
-  TransformImpl(m, &m, std::forward<F>(fn));
-  return m;
+template <IsVector Src, IsVector Dst, typename F>
+void TransformImpl(const Src& src, Dst* dst, F&& fn) {
+  assert(src.Size() == dst->Size());
+
+  for (int i = 0; i < src.Size(); ++i)
+    (*dst)(i) = std::invoke(fn, src(i));
 }
 
-template <IsMatrix M, typename F>
-auto Transform(const M& m, F&& fn) {
-  using R = typename std::remove_cvref_t<M>;
-  Matrix<typename R::Scalar> result{m.Rows(), m.Columns()};
-  TransformImpl(m, &result, std::forward<F>(fn));
+template <WritableTensor X, typename F>
+X Transform(X x, F&& fn) {
+  TransformImpl(x, &x, std::forward<F>(fn));
+  return x;
+}
+
+template <IsTensor X, typename F> requires (!WritableTensor<X>)
+ValueTensor<X> Transform(const X& x, F&& fn) {
+  ValueTensor<X> result = AllocateShape(x);
+  TransformImpl(x, &result, std::forward<F>(fn));
   return result;
 }
 
 template <IsVector L, IsVector R>
-auto Dot(const L& lhs, const R& rhs, int count = -1) {
+auto Dot(const L& lhs, const R& rhs) {
   assert(lhs.Size() == rhs.Size());
   using T = std::decay_t<decltype(std::declval<typename L::Scalar>() * std::declval<typename R::Scalar>())>;
-  if (count < 0) count = lhs.Size();
 
   T sum = T{0};
-  for (int i = 0; i < count; ++i)
+  for (int i = 0; i < lhs.Size(); ++i)
     sum += lhs(i) * rhs(i);
   return sum;
 }
@@ -109,6 +116,64 @@ auto MatMul_XYT(const X& lhs, const Y& rhs) {
   return out;
 }
 
+template <IsVector2D X, IsMatrix Y>
+auto MatMul_XYT(const X& lhs, const Y& rhs) {
+  using T = decltype(std::declval<typename X::Scalar>() * std::declval<typename Y::Scalar>());
+  assert(lhs.Columns() == rhs.Columns());
+
+  const int lcols = lhs.Columns();
+  const int rrows = rhs.Rows();
+  RowVector<T> out(rrows);
+
+  constexpr int rrows_per_block = 1024;
+  const int rrow_blocks = (rrows + rrows_per_block - 1) / rrows_per_block;
+  const int total_blocks = rrow_blocks;
+
+  T* dst = out.RowData(0);
+  ParallelFor(0, total_blocks, [&](int i) {
+  //for (int i = 0; i < total_blocks; ++i) {
+    const int rrow_begin = i * rrows_per_block;
+    const int rrow_end = std::min(rrow_begin + rrows_per_block, rrows);
+
+    const T* pl = &lhs(0);
+    for (int j = rrow_begin; j < rrow_end; ++j)
+      dst[j] = XYT_Kernel(pl, rhs.RowData(j), lcols);
+  }
+  );
+  return out;
+}
+
+template <IsVector2D X, IsMatrix Y>
+auto MatMul_XY(const X& lhs, const Y& rhs) {
+  using T = decltype(std::declval<typename X::Scalar>() * std::declval<typename Y::Scalar>());
+  assert(lhs.Columns() == rhs.Rows());
+
+  const int lcols = lhs.Columns();
+  const int rcols = rhs.Columns();
+  RowVector<T> out(rcols);
+
+  constexpr int rcols_per_block = 16 * 32;
+  const int rcol_blocks = (rcols + rcols_per_block - 1) / rcols_per_block;
+  const int total_blocks = rcol_blocks;
+  
+  T* dst = out.RowData(0);
+  //ParallelFor(0, total_blocks, [&](int block) {
+  for (int block = 0; block < total_blocks; ++block) {
+    const int rcol_begin = block * rcols_per_block;
+    const int rcol_end = std::min(rcol_begin + rcols_per_block, rcols);
+    std::fill(dst + rcol_begin, dst + rcol_end, T{0});
+
+    for (int i = 0; i < lcols; ++i) {
+      const T li = lhs(i);
+      const T* pr = rhs.RowData(i);
+      for (int j = rcol_begin; j < rcol_end; ++j)
+        dst[j] += li * pr[j];
+    }
+  }
+  //);
+  return out;
+}
+
 template <IsMatrix L, IsMatrix R>
 L& operator+=(L& lhs, const R& rhs) {
   using T = typename L::Scalar;
@@ -124,6 +189,7 @@ L& operator+=(L& lhs, const R& rhs) {
 }
 
 template <IsMatrix L, IsMatrix R>
+  requires (!(IsVector<L> && IsVector<R>))
 auto operator+(const L& lhs, const R& rhs) {
   using T = decltype(std::declval<typename L::Scalar>() + std::declval<typename R::Scalar>());
   assert(lhs.Rows() == rhs.Rows());
@@ -136,6 +202,16 @@ auto operator+(const L& lhs, const R& rhs) {
     for (int j = 0; j < lhs.Columns(); ++j)
       pd[j] = pl[j] + pr[j];
   }
+  return out;
+}
+
+template <IsVector L, IsVector R>
+auto operator+(const L& lhs, const R& rhs) {
+  using T = decltype(std::declval<typename L::Scalar>() + std::declval<typename R::Scalar>());
+  assert(lhs.Size() == rhs.Size());
+  RowVector<T> out{lhs.Size()};
+  for (int i = 0; i < lhs.Size(); ++i)
+    out(i) = lhs(i) + rhs(i);
   return out;
 }
 
@@ -152,4 +228,25 @@ int ArgMax(const V& v) {
     }
   }
   return pos;
+}
+
+template <typename T>
+RowVector<T> operator*(RowVector<T> lhs, T rhs) {
+  for (int i = 0; i < lhs.Size(); ++i)
+    lhs(i) *= rhs;
+  return lhs;
+}
+
+template <IsVector V, std::floating_point T>
+auto operator*(const V& lhs, T rhs) {
+  using U = decltype(std::declval<typename V::Scalar>() * T{0});
+  RowVector<U> out(lhs.Size());
+  for (int i = 0; i < out.Size(); ++i)
+    out(i) = lhs(i) * rhs;
+  return out;
+}
+
+template <IsVector Lhs, IsMatrix Rhs>
+auto operator*(const Lhs& lhs, const Rhs& rhs) {
+  return MatMul_XY(lhs, rhs);
 }

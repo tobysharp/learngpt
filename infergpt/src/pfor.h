@@ -21,10 +21,12 @@ class ThreadPool {
       for (int i = a; i < b; ++i) fn(i);
     };
 
-    auto item = std::make_shared<Item>(begin, end, begin, chunk, work_);
-    while (!work_.compare_exchange_weak(item->next, item));
-    cv_.notify_all();
+    auto item = std::make_shared<Item>(begin, end, begin, chunk);
 
+    if (begin + ChunkSize(*item) < end) {
+      for (item->next = work_; !work_.compare_exchange_weak(item->next, item); );
+      cv_.notify_all();
+    }
     DoWork(item.get());
 
     while (int r = item->remaining)
@@ -41,7 +43,10 @@ class ThreadPool {
   };
   void RunWorker();
   void DoWork(Item* item);
-
+  int ChunkSize(const Item& item) const {
+    const int divisors = 2 * std::ssize(threads_);
+    return std::max<int>(1, (item.end - item.begin + divisors - 1) / divisors);
+  }
   std::vector<std::thread> threads_;
   std::atomic<bool> abort_{false};
   std::atomic<std::shared_ptr<Item>> work_{nullptr};
@@ -78,9 +83,8 @@ inline void ThreadPool::RunWorker() {
 }
 
 inline void ThreadPool::DoWork(Item* item) {
-  const int chunk_size = std::max<int>(1, (item->end - item->begin) / (2 * std::ssize(threads_)));
-
   while (!abort_) {
+    const int chunk_size = ChunkSize(*item);
     const int after = (item->current += chunk_size);  // One atomic addition to claim work.
     const int begin = after - chunk_size;
     if (begin >= item->end) break;

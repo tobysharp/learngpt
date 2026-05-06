@@ -31,6 +31,16 @@ Primary command used:
   - `mlp_proj`: `N x 3072 -> N x 768`
 - Default row counts: `10`, `25`, `49`
 
+### Vector-matrix scaling benchmark
+
+- Benchmark source: [infergpt/bench/vector_scaling_bench.cpp](/home/toby/dev/learngpt/infergpt/bench/vector_scaling_bench.cpp)
+- Purpose: compare serial vs parallel `RowVector x Matrix^T` performance across decode-relevant shapes, thread counts, and output block sizes
+- Cases covered:
+  - `decode_logits`: `1 x 768 -> 1 x 50257`
+  - `decode_attn_10`, `decode_attn_25`, `decode_attn_49`: `1 x 64 -> 1 x N`
+  - `mlp_fc`: `1 x 768 -> 1 x 3072`
+  - `mlp_proj`: `1 x 3072 -> 1 x 768`
+
 ### Perf profiling
 
 - Helper script: [scripts/profile_affine.sh](/home/toby/dev/learngpt/scripts/profile_affine.sh)
@@ -381,6 +391,75 @@ Current best-known build state:
 - [infergpt/CMakeLists.txt](/home/toby/dev/learngpt/infergpt/CMakeLists.txt#L8) uses `-ffast-math -mavx2 -mfma` for Release builds
 - [infergpt/tests/layers_test.cpp](/home/toby/dev/learngpt/infergpt/tests/layers_test.cpp#L117) uses `lowest()` instead of `-infinity()` for fast-math friendliness
 - [infergpt/src/algebra.h](/home/toby/dev/learngpt/infergpt/src/algebra.h) currently uses the simpler parallel `16 x 32` output tile inside `MatMul_XYT`, relying on compiler auto-vectorization rather than a hand-written microkernel
+
+## Vector-Matrix (`RowVector x Matrix^T`) Follow-Up
+
+This pass looked at the vector-matrix overload of [infergpt/src/algebra.h](/home/toby/dev/learngpt/infergpt/src/algebra.h), which is now a major decode-time hotspot after splitting prefill and decode.
+
+### Obvious issue found first
+
+The original vector-matrix path always called `ParallelFor` and always used a fixed output block of `16 * 32 = 512` rows.
+
+That meant:
+
+- tiny decode-attention shapes like `1 x 64 -> 1 x 49` still paid thread-pool overhead
+- medium and large decode projections could not choose a better block size by shape
+
+### Focused benchmark findings
+
+The dedicated benchmark in [infergpt/bench/vector_scaling_bench.cpp](/home/toby/dev/learngpt/infergpt/bench/vector_scaling_bench.cpp) was used to sweep serial vs parallel, threads, and output block size.
+
+Representative results:
+
+- `decode_attn_49` (`1 x 64 -> 1 x 49`):
+  - serial: about `46.5 GFLOP/s`
+  - all parallel variants were much worse, typically about `2` to `15 GFLOP/s`
+  - conclusion: these tiny decode-attention products should stay serial
+- `mlp_fc` (`1 x 768 -> 1 x 3072`) at `32` threads:
+  - serial: about `43 GFLOP/s`
+  - best observed parallel block: `64`, about `215 GFLOP/s`
+  - `512` was materially worse, about `157 GFLOP/s`
+- `mlp_proj` (`1 x 3072 -> 1 x 768`) at `32` threads:
+  - serial: about `54 GFLOP/s`
+  - best observed parallel block: `16`, about `218 GFLOP/s`
+  - larger blocks regressed steadily
+- `decode_logits` (`1 x 768 -> 1 x 50257`) at `32` threads:
+  - serial: about `24 GFLOP/s`
+  - parallel variants clustered around `27` to `28 GFLOP/s`
+  - best observed blocks were in the rough `128` to `1024` range, with only modest differences between them
+
+### Kept kernel shape
+
+The current kept vector-matrix path in [infergpt/src/algebra.h](/home/toby/dev/learngpt/infergpt/src/algebra.h) remains the simpler baseline:
+
+- always uses `ParallelFor`
+- uses a fixed output block size of `16 * 32 = 512`
+
+Interpretation:
+
+- the focused benchmark did show that some isolated vector-matrix cases preferred a serial path or smaller block sizes
+- but the attempted heuristic dispatch based on those microbenchmarks was worse on the real end-to-end workload and was reverted
+
+### Codegen check
+
+Disassembly of the row-vector `MatMul_XYT` path in the Release AVX2/FMA build showed the expected packed SIMD reduction:
+
+- `vmovups ymm*`
+- `vfmadd231ps ymm*`
+- `vaddps`
+- scalar cleanup with `vfmadd231ss`
+
+So the vector-matrix inner loop is still auto-vectorized and using FMA in the same broad style as the matrix-matrix kernel.
+
+### End-to-end effect so far
+
+The heuristic vector-matrix dispatch based on a serial cutoff and shape-selected block sizes did not improve the real workload and was worse than the simpler baseline, so it was reverted.
+
+Interpretation:
+
+- the isolated vector-matrix kernels did show interesting microbenchmark behavior
+- but those results did not transfer cleanly to the end-to-end run
+- the row-vector `MatMul_XYT` path is still worth attention because profiling shows it remains one of the dominant compute hotspots, but future changes should be validated primarily against the full decode workload rather than microbenchmarks alone
 
 What is probably left on the table for single-thread performance:
 

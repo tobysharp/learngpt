@@ -20,13 +20,14 @@ void TestDotAcrossVectorViews() {
   TestMatrix matrix{3, 3};
   Fill(&matrix);
 
-  const auto row0 = Row(matrix, 0);
-  const auto row1 = Row(matrix, 1);
-  const auto col2 = Column(matrix, 2);
+  auto row0 = Row(matrix, 0);
+  auto row1 = Row(matrix, 1);
+  auto row2 = Row(matrix, 2);
+  auto row2_tail = SubVector(row2, 1, 2);
+  auto row1_head = SubVector(row1, 0, 2);
 
   assert(Dot(row0, row1) == 32.0f);
-  assert(Dot(row0, col2) == 42.0f);
-  assert(Dot(row1, col2, 2) == 42.0f);
+  assert(Dot(row1_head, row2_tail) == 43.0f);
 
   RowVector<float> weights{3};
   weights(0) = 0.5f;

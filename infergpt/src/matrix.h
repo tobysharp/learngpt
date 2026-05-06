@@ -21,6 +21,32 @@ concept IsMatrix = requires(M m, int i, int j) {
   { m(i, j) };
 };
 
+template <typename V>
+concept IsVector = requires(V v, int i) {
+  typename std::remove_cvref_t<V>::Scalar;
+  { v.Size() } -> std::convertible_to<int>;
+  { v(i) };
+};
+
+template <typename X>
+concept IsVector2D = IsVector<X> && IsMatrix<X>;
+
+template <typename X>
+concept IsTensor = IsVector<X> || IsMatrix<X>;
+
+template <typename X>
+concept WritableVector = IsVector<X> && requires(std::remove_reference_t<X>& x, int i, typename std::remove_cvref_t<X>::Scalar value) {
+  x(i) = value;
+};
+
+template <typename X>
+concept WritableMatrix = IsMatrix<X> && !IsVector<X> && requires(std::remove_reference_t<X>& x, int i, int j, typename std::remove_cvref_t<X>::Scalar value) {
+  x(i, j) = value;
+};
+
+template <typename X>
+concept WritableTensor = WritableVector<X> || WritableMatrix<X>;
+
 template <IsMatrix M>
 class SubMatrixView {
  public:
@@ -133,6 +159,15 @@ class Matrix {
     if (!f) throw std::runtime_error("Load from file failed.");
   }
 
+  template <IsVector V>
+  void AddRow(const V& rhs) {
+    data_.resize(++rows_ * cols_);
+    ptr_ = data_.data();
+    T* row = RowData(rows_ - 1);
+    for (int i = 0; i < cols_; ++i)
+      row[i] = rhs(i);
+  }
+
  protected:
   int rows_, cols_;
   std::vector<T> data_;
@@ -151,33 +186,12 @@ auto Transpose(const M& m) {
   return result;
 }
 
-template <typename V>
-concept IsVector = requires(V v, int i) {
-  typename std::remove_cvref_t<V>::Scalar;
-  { v.Size() } -> std::convertible_to<int>;
-  { v(i) };
-};
-
-// A row vector.
-template <typename T>
-class RowVector : public Matrix<T> {
- public:
-  explicit RowVector(int cols) : Matrix<T>(1, cols) {}
-  RowVector(std::vector<T>&& data) : Matrix<T>(1, std::ssize(data), std::move(data)) {}
-  RowVector(const RowVector&) = default;
-  RowVector(RowVector&&) = default;
-
-  int Size() const { return this->Columns(); }
-
-  T& operator()(int index) { return this->ptr_[index]; }
-  const T& operator()(int index) const { return this->ptr_[index]; }
-
-  T& operator()(int, int col) { return this->ptr_[col]; }
-  const T& operator()(int, int col) const { return this->ptr_[col]; }
-
-  operator std::span<T>() { return this->data_; }
-  operator std::span<const T>() const { return this->data_; }
-};
+template <IsVector Src, IsVector Dst>
+inline void Assign(const Src& src, Dst& dst) {
+  assert(src.Size() == dst.Size());
+  for (int i = 0; i < dst.Size(); ++i)
+    dst(i) = src(i);
+}
 
 template <IsMatrix M>
 class RowView {
@@ -197,6 +211,12 @@ class RowView {
   Reference operator()(int col) const { return data_[col]; }
   Reference operator()(int, int col) const { return data_[col]; }
 
+  template <IsVector Rhs>
+  RowView& operator =(const Rhs& rhs) {
+    Assign(rhs, *this);
+    return *this;
+  }
+
  private:
   std::reference_wrapper<M> matrix_; 
   Pointer data_;
@@ -205,36 +225,77 @@ class RowView {
 template <IsMatrix M>
 auto Row(M& m, int row) {
   assert(row < m.Rows());
-  return RowView<M>{m, row};
+  const int row_index = row >= 0 ? row : (m.Rows() + row);
+  return RowView<M>{m, row_index};
 }
 
-template <IsMatrix M>
-class ColumnView {
- public:
-  using Scalar = typename  std::remove_cvref_t<M>::Scalar;
-  using Reference = decltype(std::declval<M&>()(0, 0));
-  using Pointer = decltype(std::declval<M&>().RowData(0));
+template <IsVector V>
+class SubVectorView {
+  public:
+   using Scalar = typename std::remove_cvref_t<V>::Scalar;
+   using Reference = decltype(std::declval<V&>()(0));
+   using Pointer = decltype(&std::declval<V&>()(0));
 
-  ColumnView(M& matrix, int col) :
-     matrix_(matrix), column_(col) {}
+   SubVectorView(V& vector, int begin, int size) :
+    vector_(vector), begin_(begin), size_(size) {}
   
-  int Rows() const { return matrix_.get().Rows(); }
-  int Columns() const { return 1; }
-  int Size() const { return Rows(); }
-  Pointer RowData(int row) const { return matrix_.get().RowData(row) + column_; }
-  Reference operator()(int row) const { return matrix_.get()(row, column_); }
-  Reference operator()(int row, int) const { return matrix_.get()(row, column_); }
+   int Size() const { return size_; }
+   decltype(auto) operator()(int index) const { return vector_.get()(begin_ + index); }
 
- private:
-  std::reference_wrapper<M> matrix_; 
-  int column_;
+   template <IsVector Rhs>
+   SubVectorView& operator =(const Rhs& rhs) {
+    Assign(rhs, *this);
+    return *this;
+   }
+
+  private:
+   std::reference_wrapper<V> vector_;
+   int begin_;
+   int size_;
 };
 
-template <IsMatrix M>
-auto Column(M& m, int column) {
-  assert(column < m.Columns());
-  return ColumnView<M>{m, column};
+template <IsVector V>
+auto SubVector(V& rhs, int begin, int size) {
+  return SubVectorView{rhs, begin, size};
 }
+
+// A row vector.
+template <typename T>
+class RowVector : public Matrix<T> {
+ public:
+  explicit RowVector(int cols) : Matrix<T>(1, cols) {}
+  RowVector(std::vector<T>&& data) : Matrix<T>(1, std::ssize(data), std::move(data)) {}
+  RowVector(const RowVector&) = default;
+  RowVector(RowVector&&) = default;
+  template <IsVector V> requires (std::is_convertible_v<typename V::Scalar, T>)
+  RowVector(const V& rhs) : Matrix<T>(1, rhs.Size()) {
+    Assign(rhs, *this);
+  }
+
+  int Size() const { return this->Columns(); }
+
+  T& operator()(int index) { return this->ptr_[index]; }
+  const T& operator()(int index) const { return this->ptr_[index]; }
+
+  T& operator()(int, int col) { return this->ptr_[col]; }
+  const T& operator()(int, int col) const { return this->ptr_[col]; }
+
+  operator std::span<T>() { return this->data_; }
+  operator std::span<const T>() const { return this->data_; }
+
+  RowVector& operator =(const RowVector& rhs) = default;
+  RowVector& operator =(RowVector&& rhs) = default;
+
+  RowVector& operator *=(T rhs) {
+    T* data = this->ptr_;
+    for (int i = 0; i < Size(); ++i)
+      data[i] *= rhs;
+    return *this;
+  }
+};
+
+template <IsTensor X>
+using ValueTensor = std::conditional_t<IsVector<X>, RowVector<typename std::remove_cvref_t<X>::Scalar>, Matrix<typename std::remove_cvref_t<X>::Scalar>>;
 
 template <IsVector V>
 class RowBroadcastView {
@@ -261,4 +322,14 @@ class RowBroadcastView {
 template <IsVector V>
 auto BroadcastToRows(V& v, int rows) {
   return RowBroadcastView<V>{v, rows};
+}
+
+template <IsVector X>
+auto AllocateShape(const X& x) {
+  return RowVector<typename X::Scalar>{x.Size()};
+}
+
+template <IsMatrix X> requires (!IsVector<X>)
+auto AllocateShape(const X& x) {
+  return Matrix<typename X::Scalar>{x.Rows(), x.Columns()};
 }

@@ -15,13 +15,20 @@ struct Affine {
   RowVector<T> bias;
   explicit Affine(int rows, int cols) : weights_T(cols, rows), bias(cols) {}
   void Load(const std::string& stem) {
-    Matrix<T> weights{weights_T.Columns(), weights_T.Rows()};
+    Matrix<T> weights(weights_T.Columns(), weights_T.Rows());
     weights.Load(stem + "_w.bin");
     weights_T = Transpose(weights);
     bias.Load(stem + "_b.bin");
   }
   Matrix<T> operator()(const Matrix<T>& x) const {
-    return MatMul_XYT(x, weights_T) + BroadcastToRows(bias, x.Rows());
+    auto y = MatMul_XYT(x, weights_T);
+    y += BroadcastToRows(bias, x.Rows());
+    return y;
+  }
+  RowVector<T> operator()(const RowVector<T>& x) const {
+    auto y = MatMul_XYT(x, weights_T);
+    y += bias;
+    return y;
   }
 };
 
@@ -29,31 +36,36 @@ struct Affine {
 template <typename T>
 struct LayerNorm {
   RowVector<T> g, b;
+  
   explicit LayerNorm(int cols) : g(cols), b(cols) {}
   void Load(const std::string& stem) {
     g.Load(stem + "_g.bin");
     b.Load(stem + "_b.bin");
   }
-  Matrix<T> operator()(Matrix<T> x) const {
+  template <WritableTensor X>
+  X operator()(X x) const {
     LayerNormInPlace(x);
     return x;
   }
-  template <IsMatrix X>
-  Matrix<T> operator()(const X& x) const {
-    Matrix<T> copy = x;
+  template <IsTensor X> requires (!WritableTensor<X>)
+  ValueTensor<X> operator()(const X& x) const {
+    ValueTensor<X> copy = x;
     LayerNormInPlace(copy);
     return copy;
   }
  private:
-  void LayerNormInPlace(Matrix<T>& x) const {
+  template <IsMatrix X> requires (!IsVector<X>)
+  void LayerNormInPlace(X&& x) const {
+    for (int i = 0; i < x.Rows(); ++i)
+      LayerNormInPlace(Row(x, i));
+  }
+  template <IsVector V>
+  void LayerNormInPlace(V&& row) const {
     constexpr T eps = T{1e-5};
-    for (int i = 0; i < x.Rows(); ++i) {
-      auto row = Row(x, i);
-      auto [mean, variance] = MeanAndVariance(row);
-      const auto scale = T{1} / std::sqrt(variance + eps);
-      for (int j = 0; j < row.Size(); ++j)
-        row(j) = (row(j) - mean) * scale * g(j) + b(j);
-    }
+    auto [mean, variance] = MeanAndVariance(row);
+    const auto scale = T{1} / std::sqrt(variance + eps);
+    for (int j = 0; j < row.Size(); ++j)
+      row(j) = (row(j) - mean) * scale * g(j) + b(j);
   }
 };
 
@@ -67,7 +79,9 @@ struct MultiHeadAttention {
     c_proj_.Load(stem + "_c_proj");
   }
 
-  Matrix<T> operator()(Matrix<T> x) const {
+  using KVCache = Matrix<T>;
+
+  std::tuple<Matrix<T>, KVCache> Prefill(Matrix<T> x) const {
     const int sequence_size = x.Rows();
     const int embedding_size = x.Columns();
     const auto qkv = c_attn_(x);  // QKV projection.
@@ -78,7 +92,29 @@ struct MultiHeadAttention {
       auto v = Block(qkv, 0, 2 * embedding_size + i * dims_per_head, sequence_size, dims_per_head);
       Block(x, 0, dims_per_head * i, sequence_size, dims_per_head) = CausalAttention(q, k, v);
     }
+    KVCache cache = Block(qkv, 0, embedding_size, qkv.Rows(), 2 * embedding_size);
+    return {c_proj_(x), cache};
+  }
+
+  RowVector<T> Decode(RowVector<T> x, KVCache* cache) const {
+    const int embedding_size = x.Columns();
+    const auto qkv = c_attn_(x);  // QKV projection.
+    cache->AddRow(SubVector(qkv, embedding_size, 2 * embedding_size));
+  
+    const int dims_per_head = embedding_size / heads_;
+    //ParallelFor(0, heads_, [&](int i) {
+    for (int i = 0; i < heads_; ++i) {
+      auto q = SubVector(qkv, i * dims_per_head, dims_per_head);
+      auto k = Block(*cache, 0, i * dims_per_head, cache->Rows(), dims_per_head);
+      auto v = Block(*cache, 0, embedding_size + i * dims_per_head, cache->Rows(), dims_per_head);
+      SubVector(x, dims_per_head * i, dims_per_head) = CausalAttention(q, k, v);
+    }
+    //);
     return c_proj_(x);
+  }
+
+  Matrix<T> operator()(Matrix<T> x) const {
+    return std::get<0>(Prefill(std::move(x)));
   }
 
  private:
@@ -103,20 +139,33 @@ struct MultiHeadAttention {
     using R = typename std::remove_cvref_t<M>;
     static_assert(std::is_same_v<T, typename R::Scalar>);  
 
-    Matrix<T> v_T = Transpose(v);
-    Matrix<T> out{q.Rows(), v_T.Rows()};
+    Matrix<T> out{q.Rows(), v.Columns()};
     RowVector<T> row{k.Rows()};
     const T scale = T{1} / std::sqrt(static_cast<T>(q.Columns()));
     for (int i = 0; i < q.Rows(); ++i) {
       for (int j = 0; j <= i; ++j)
         row(j) = Dot(Row(q, i), Row(k, j)) * scale;
+
       SoftmaxInPlace(row, i + 1);
-      // Dot of first (i+1) elements of `row` with v.column(j).
+
       T* dst = out.RowData(i);
-      for (int j = 0; j < v_T.Rows(); ++j)
-        dst[j] = Dot(row, Row(v_T, j), i + 1); 
+      std::fill(dst, dst + out.Columns(), T{0});
+      for (int ii = 0; ii <= i; ++ii) {
+        const T* vdata = v.RowData(ii);
+        const T lhs = row(ii);
+        for (int j = 0; j < v.Columns(); ++j)
+          dst[j] += lhs * vdata[j];
+      }
     }
     return out;
+  }
+
+  template <IsVector Qi, IsMatrix KV>
+  static RowVector<T> CausalAttention(const Qi& qi, const KV& k, const KV& v) {
+    const T scale = T{1} / std::sqrt(static_cast<T>(qi.Size()));
+    RowVector<T> row = MatMul_XYT(qi * scale, k);
+    SoftmaxInPlace(row, row.Size());
+    return row * v;
   }
 
   Affine<T> c_attn_;
@@ -134,15 +183,17 @@ struct MultiLayerPerceptron {
     c_fc.Load(stem + "_c_fc");
     c_proj.Load(stem + "_c_proj");
   }
-  Matrix<T> operator()(Matrix<T> x) const {
+  template <WritableTensor X>
+  ValueTensor<X> operator()(X x) const {
     return c_proj(Gelu(c_fc(x)));
   }
  private:
   // The GELU activation function, approximating x * sigmoid(1.702 * x).
-  static Matrix<T> Gelu(Matrix<T> m) {
+  template <WritableTensor X>
+  static ValueTensor<X> Gelu(X x) {
     const T sqrt_two_over_pi = std::sqrt(T{2} / std::numbers::pi_v<T>);
-    return Transform(std::move(m), [sqrt_two_over_pi](T x) {
-      return T{0.5} * x * (T{1} + std::tanh(sqrt_two_over_pi * (x + static_cast<T>(0.044715) * x * x * x)));
+    return Transform(std::move(x), [sqrt_two_over_pi](T value) {
+      return T{0.5} * value * (T{1} + std::tanh(sqrt_two_over_pi * (value + static_cast<T>(0.044715) * value * value * value)));
     });
   }
 };
@@ -150,6 +201,8 @@ struct MultiLayerPerceptron {
 // A transformer layer, consisting of a multi-head self-attention layer followed by a feedforward MLP layer, with layer normalization and residual connections.
 template <typename T>
 struct Transformer {
+  using Cache = typename MultiHeadAttention<T>::KVCache;
+
   MultiHeadAttention<T> attention;
   MultiLayerPerceptron<T> mlp;
   LayerNorm<T> ln_1, ln_2;
@@ -161,9 +214,21 @@ struct Transformer {
     ln_1.Load(stem + "_ln_1");
     ln_2.Load(stem + "_ln_2");
   }
-  Matrix<T> operator()(Matrix<T> x) const {
-    x += attention(ln_1(x));
+  
+  std::tuple<Matrix<T>, Cache> Prefill(Matrix<T> x) const {
+    const auto [attn, cache] = attention.Prefill(ln_1(x));
+    x += attn;
+    x += mlp(ln_2(x));
+    return {x, cache};
+  }
+
+  RowVector<T> Decode(RowVector<T> x, Cache* cache) const {
+    x += attention.Decode(ln_1(x), cache);
     x += mlp(ln_2(x));
     return x;
+  }
+
+  Matrix<T> operator()(Matrix<T> x) const {
+    return std::get<0>(Prefill(std::move(x)));
   }
 };
